@@ -1,0 +1,7 @@
+{
+  "port": 7788,
+  "pollMinutes": 5,
+  "accounts": [
+    { "id": "main", "label": "Main", "configDir": "~/.claude", "default": true }
+  ]
+}

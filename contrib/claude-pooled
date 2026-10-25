@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# claude-pooled: run `claude` on whichever pooled account the claude-rotator gateway picks right now.
+# For your own callers that cannot run `ccr` themselves (a container or a CI job on this machine).
+# Anywhere `ccr` itself can run, prefer `ccr run`, which needs no gateway.
+#
+#   claude-pooled -p "summarise README.md"
+#
+# Env:
+#   CLAUDE_POOL_URL     gateway base URL (default http://127.0.0.1:7799)
+#   CLAUDE_POOL_KEY     gateway key (default: read from $CLAUDE_USAGE_DATA/secrets/gateway.env)
+#   CLAUDE_POOL_CALLER  name logged by the gateway (default: user@host)
+#   CLAUDE_POOL_MODEL   model hint for the picker (default: the gateway default)
+#
+# The leased token is put in CLAUDE_CODE_OAUTH_TOKEN for this one claude process. Anything that process
+# runs (tools, shell commands, a prompt-injected agent) can read it from the environment. Lease only to
+# processes you trust. See the README.
+set -euo pipefail
+URL="${CLAUDE_POOL_URL:-http://127.0.0.1:7799}"
+KEY="${CLAUDE_POOL_KEY:-}"
+if [ -z "$KEY" ]; then
+  GENV="${CLAUDE_USAGE_DATA:-$HOME/.local/share/claude-usage}/secrets/gateway.env"
+  KEY=$(sed -n 's/^CLAUDE_USAGE_GATEWAY_KEY=//p' "$GENV" 2>/dev/null || true)
+fi
+[ -n "$KEY" ] || { echo "claude-pooled: no gateway key (set CLAUDE_POOL_KEY)" >&2; exit 1; }
+command -v node >/dev/null || { echo "claude-pooled: node not found" >&2; exit 1; }
+CALLER="${CLAUDE_POOL_CALLER:-${USER:-user}@$(hostname -s 2>/dev/null || echo host)}"
+Q="caller=$(node -p 'encodeURIComponent(process.argv[1])' "$CALLER")"
+[ -n "${CLAUDE_POOL_MODEL:-}" ] && Q="$Q&model=$(node -p 'encodeURIComponent(process.argv[1])' "$CLAUDE_POOL_MODEL")"
+
+# The key goes in a header read from stdin, so it never shows in `ps`.
+resp=$(printf 'x-gateway-key: %s\n' "$KEY" | curl -sS --max-time 20 -H @- -w '\n%{http_code}' "$URL/v1/lease?$Q") \
+  || { echo "claude-pooled: gateway unreachable at $URL" >&2; exit 1; }
+code="${resp##*$'\n'}"; body="${resp%$'\n'*}"
+if [ "$code" != 200 ]; then
+  echo "claude-pooled: lease failed (HTTP $code): $(printf '%s' "$body" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).error.message)}catch(_){console.log(s.slice(0,200))}})')" >&2
+  exit 1
+fi
+acct=$(printf '%s' "$body" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(String(JSON.parse(s).account||"")))')
+token=$(printf '%s' "$body" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(String(JSON.parse(s).token||"")))')
+[ -n "$token" ] || { echo "claude-pooled: lease returned no token" >&2; exit 1; }
+echo "claude-pooled: account $acct" >&2
+unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_POOL_KEY
+export CLAUDE_CODE_OAUTH_TOKEN="$token" CLAUDE_PICK_ACCOUNT="$acct"
+exec claude "$@"

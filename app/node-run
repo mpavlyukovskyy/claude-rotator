@@ -1,0 +1,48 @@
+#!/bin/sh
+# Runs node, found at run time, so the services and the status line survive a Node upgrade or a
+# version-manager switch. Candidates in order: $CLAUDE_USAGE_NODE, every node on PATH, common install dirs,
+# then nvm versions newest first. The first one that is Node 18 or later wins; older ones are skipped.
+# Also puts node's own dir on PATH, so a `claude` installed with npm next to it is found.
+#   node-run <script.js> [args]
+# Test hook: NODE_RUN_SEARCH replaces the list of common install dirs.
+MIN=18
+SEARCH=${NODE_RUN_SEARCH-"/opt/homebrew/bin /usr/local/bin $HOME/.local/bin $HOME/.volta/bin $HOME/.asdf/shims $HOME/.nodenv/shims $HOME/.local/share/fnm/aliases/default/bin /usr/bin /bin"}
+for d in $SEARCH; do
+  case ":$PATH:" in *":$d:"*) ;; *) PATH="$PATH:$d";; esac
+done
+
+# nvm versions, newest first
+nvm_nodes() {
+  for n in "$HOME"/.nvm/versions/node/v*/bin/node; do
+    [ -x "$n" ] || continue
+    v=${n#"$HOME"/.nvm/versions/node/v}; v=${v%%/*}
+    echo "$v" | awk -F. -v p="$n" '{ printf "%012d %s\n", $1 * 1000000 + $2 * 1000 + $3, p }'
+  done | sort -r | cut -d' ' -f2-
+}
+candidates() {
+  [ -n "${CLAUDE_USAGE_NODE:-}" ] && echo "$CLAUDE_USAGE_NODE"
+  _ifs=$IFS; IFS=:
+  for d in $PATH; do [ -n "$d" ] && echo "$d/node"; done
+  IFS=$_ifs
+  nvm_nodes
+}
+
+N=""; SKIPPED=""
+NL='
+'
+old_ifs=$IFS; IFS=$NL  # one candidate per line, so a dir with spaces stays one path
+for n in $(candidates); do
+  [ -x "$n" ] && [ ! -d "$n" ] || continue
+  major=$("$n" --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\)\..*/\1/p')
+  if [ -n "$major" ] && [ "$major" -ge "$MIN" ]; then N=$n; break; fi
+  case " $SKIPPED " in *" $n "*) ;; *) SKIPPED="$SKIPPED $n"; echo "claude-rotator: skipping $n ($("$n" --version 2>/dev/null || echo "no version"); Node $MIN or later is needed)" >&2;; esac
+done
+IFS=$old_ifs
+if [ -z "$N" ]; then
+  echo "claude-rotator: no Node $MIN or later found${SKIPPED:+ (too old:$SKIPPED)}. Install Node $MIN+ or set CLAUDE_USAGE_NODE to one." >&2
+  exit 127
+fi
+D=$(dirname "$N")
+case ":$PATH:" in *":$D:"*) ;; *) PATH="$PATH:$D";; esac
+export PATH
+exec "$N" "$@"

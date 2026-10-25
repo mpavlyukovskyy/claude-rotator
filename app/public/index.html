@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Rotator</title>
+<style>
+  :root { color-scheme: light dark;
+    --bg:#f7f7f5; --card:#ffffff; --ink:#1a1a19; --ink2:#5b5b57; --muted:#8a8a85; --line:#e4e4e0;
+    --accent:#2f6fde; --accent-track:#dbe6fb;
+    --good:#0ca30c; --warn:#fab219; --serious:#ec835a; --crit:#d03b3b;
+    --warn-track:#fdecc4; --serious-track:#fbdccf; --crit-track:#f5cfcf; }
+  @media (prefers-color-scheme: dark) { :root {
+    --bg:#1a1a19; --card:#232322; --ink:#f2f2ee; --ink2:#b9b9b3; --muted:#83837e; --line:#33332f;
+    --accent:#6f9df0; --accent-track:#27395c; --warn-track:#4d3a0d; --serious-track:#4f2c1e; --crit-track:#4a1f1f; } }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,system-ui,sans-serif; padding:28px 32px 48px; }
+  header { display:flex; align-items:baseline; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:22px }
+  h1 { font-size:20px; margin:0; font-weight:600 }
+  .meta { color:var(--muted); font-size:12px }
+  .meta.bad { color:var(--crit); font-weight:600 }
+  .hero { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px 22px; margin-bottom:22px; display:flex; align-items:center; gap:22px; flex-wrap:wrap }
+  .hero .big { font-size:48px; font-weight:600; line-height:1; letter-spacing:-.01em }
+  .hero .sub { color:var(--ink2) }
+  .hero code { background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:3px 8px; font:13px ui-monospace,SFMono-Regular,Menlo,monospace }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:16px }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px 20px; position:relative }
+  .card.rec { outline:2px solid var(--accent); outline-offset:-1px }
+  .card h2 { font-size:16px; margin:0 0 2px; font-weight:600; display:flex; align-items:center; gap:8px; flex-wrap:wrap }
+  .card .who { color:var(--muted); font-size:12px; margin-bottom:4px; word-break:break-all }
+  .badge { font-size:11px; font-weight:600; padding:2px 7px; border-radius:999px; border:1px solid var(--line); color:var(--ink2); background:var(--bg) }
+  .badge.rec { color:#fff; background:var(--accent); border-color:var(--accent) }
+  .badge.fable { color:#fff; background:var(--good); border-color:var(--good) }
+  .badge.nofable { color:var(--muted) }
+  .card.fable { border-left:4px solid var(--good) }
+  .card.maxed { opacity:.62 }
+  .grouphead { grid-column:1 / -1; color:var(--muted); font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; margin:10px 0 -6px; display:flex; align-items:center; gap:10px }
+  .grouphead::after { content:''; flex:1; height:1px; background:var(--line) }
+  .grouphead.good { color:var(--good) }
+  .win.fablewin .reset { color:var(--good) }
+  .fablesum { font-size:13px; color:var(--ink2) }
+  .fablesum b { color:var(--good) }
+  .badge.live { color:var(--good); border-color:var(--good) }
+  .badge.stale { color:var(--serious); border-color:var(--serious) }
+  .badge.login { color:var(--crit); border-color:var(--crit) }
+  .win { margin:14px 0 0 }
+  .win .reset { font-size:19px; font-weight:600; line-height:1.15; letter-spacing:-.01em }
+  .win .reset.crit { color:var(--crit) }
+  .win .sub { font-size:12px; color:var(--muted); margin:2px 0 6px }
+  .win .sub b { color:var(--ink2); font-weight:600 }
+  .win .track { height:7px; margin:0 }
+  .meter { margin:12px 0 4px }
+  .meter .row { display:flex; justify-content:space-between; align-items:baseline; font-size:13px }
+  .meter .row b { font-weight:600 }
+  .meter .row .st { font-size:12px; color:var(--ink2) }
+  .track { height:10px; border-radius:5px; background:var(--accent-track); overflow:hidden; margin:6px 0 4px }
+  .fill { height:100%; border-radius:5px; background:var(--accent); transition:width .4s }
+  .m-warn .track{background:var(--warn-track)} .m-warn .fill{background:var(--warn)}
+  .m-serious .track{background:var(--serious-track)} .m-serious .fill{background:var(--serious)}
+  .m-crit .track{background:var(--crit-track)} .m-crit .fill{background:var(--crit)}
+  .reset { font-size:12px; color:var(--muted) }
+  .spark { display:block; width:100%; height:26px; margin-top:14px; opacity:.8 }
+  .spark path { fill:none; stroke:var(--accent); stroke-width:2; stroke-linejoin:round; stroke-linecap:round }
+  .spark .base { stroke:var(--line); stroke-width:1 }
+  .foot { color:var(--muted); font-size:11px; margin-top:6px }
+  .err { color:var(--crit); font-size:12px; margin-top:10px }
+  .err code { font:12px ui-monospace,Menlo,monospace }
+  button { font:inherit; font-size:12px; padding:5px 10px; border-radius:7px; border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer }
+  button:hover { border-color:var(--accent) }
+  table.hist { width:100%; border-collapse:collapse; font-size:12px; margin-top:8px; display:none }
+  table.hist th, table.hist td { text-align:left; padding:3px 6px; border-bottom:1px solid var(--line); font-variant-numeric:tabular-nums }
+  #dlg { position:fixed; inset:0; background:rgba(0,0,0,.45); display:flex; align-items:center; justify-content:center; z-index:50 }
+  #dlg[hidden] { display:none }   /* the #dlg rule outranks the browser's [hidden] rule, so repeat it here: without this the modal overlay covers the page and swallows every click */
+  #dlg .box { background:var(--card); color:var(--ink); border:1px solid var(--line); border-radius:12px; padding:20px 22px; max-width:460px; width:calc(100% - 40px); box-shadow:0 12px 40px rgba(0,0,0,.35); font-size:14px; line-height:1.45 }
+  #dlg .btns { display:flex; gap:10px; justify-content:flex-end; margin-top:16px }
+  #dlg button.ok { background:var(--accent); color:#fff; border-color:var(--accent); font-weight:600 }
+  #toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:var(--crit); color:#fff; padding:10px 16px; border-radius:8px; font-size:13px; z-index:60; max-width:80% }
+  details { margin-top:24px } summary { cursor:pointer; color:var(--ink2); font-size:13px }
+</style>
+</head>
+<body>
+<header>
+  <h1>Claude Usage</h1><div class="meta" style="margin-top:2px">Drain order · Fable left first, then earliest full reset</div>
+  <div style="display:flex;gap:12px;align-items:center">
+    <span class="meta" id="meta">loading…</span>
+    <button id="pollnow" title="Poll all accounts now">Refresh now</button>
+  </div>
+</header>
+
+<div id="dlg" hidden><div class="box"><div id="dlg-msg"></div><div class="btns"><button id="dlg-cancel">Cancel</button><button class="ok" id="dlg-ok">OK</button></div></div></div>
+<div id="toast" hidden></div>
+<script>
+// In-page dialogs. window.confirm()/alert() are host-provided and silently return false / vanish inside a
+// WKWebView without a UI delegate. Never use them here.
+function uiConfirm(msg) {
+  return new Promise(res => {
+    const d = document.getElementById('dlg'); document.getElementById('dlg-msg').textContent = msg; d.hidden = false;
+    const done = v => { d.hidden = true; ok.onclick = cancel.onclick = null; res(v); };
+    const ok = document.getElementById('dlg-ok'), cancel = document.getElementById('dlg-cancel');
+    ok.onclick = () => done(true); cancel.onclick = () => done(false); ok.focus();
+  });
+}
+let toastT = null;
+function uiToast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, 8000); }
+window.alert = m => uiToast(String(m));
+</script>
+<section class="hero" id="hero"></section>
+<section class="grid" id="grid"></section>
+<details><summary>History table (last 7 days, 5-hour and 7-day utilisation per poll)</summary>
+<div style="overflow-x:auto"><table class="hist" id="hist"><thead><tr><th>Time</th><th>Account</th><th>5-hour</th><th>7-day</th></tr></thead><tbody></tbody></table></div></details>
+<script>
+const $ = s => document.querySelector(s);
+// Every value from /api/state or /api/history is data (emails, labels, error text from the network): escape it before it meets innerHTML.
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmtIn = iso => {
+  if (!iso) return '';
+  const ms = new Date(iso) - Date.now();
+  if (ms <= 0) return 'reset';
+  const m = Math.round(ms / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24);
+  if (d >= 1) return `resets in ${d}d ${h % 24}h`;
+  if (h >= 1) return `resets in ${h}h ${m % 60}m`;
+  return `resets in ${m}m`;
+};
+const ago = iso => { if (!iso) return 'never'; const s = Math.round((Date.now() - new Date(iso)) / 1000); return s < 90 ? `${s}s ago` : s < 5400 ? `${Math.round(s/60)}m ago` : `${(s/3600).toFixed(1)}h ago`; };
+const sev = p => p == null ? '' : p >= 95 ? 'm-crit' : p >= 85 ? 'm-serious' : p >= 60 ? 'm-warn' : '';
+const sevLabel = p => p == null ? 'no data' : p >= 100 ? '⛔ exhausted' : p >= 95 ? '⛔ near limit' : p >= 85 ? '▲ high' : p >= 60 ? '● moderate' : '✓ ok';
+
+function meter(name, pct, resetsAt, highlight) {
+  const p = pct == null ? 0 : Math.max(0, Math.min(100, pct));
+  const left = pct == null ? null : Math.round(100 - pct);
+  const exhausted = pct != null && pct >= 100;
+  const when = resetsAt ? fmtIn(resetsAt) : (pct == null ? 'no data' : '');
+  return `<div class="win ${sev(pct)} ${highlight ? 'fablewin' : ''}">
+    <div class="reset ${exhausted ? 'crit' : ''}">${when || '-'}</div>
+    <div class="sub">${esc(name)} · <b>${left == null ? '-' : left + '% left'}</b>${exhausted ? ' · exhausted' : ''}</div>
+    <div class="track"><div class="fill" style="width:${p}%"></div></div>
+  </div>`;
+}
+
+function spark(points) {
+  if (points.length < 2) return '';
+  const W = 300, H = 34, t0 = points[0].x, t1 = points[points.length - 1].x || 1;
+  const X = x => ((x - t0) / Math.max(1, t1 - t0)) * W, Y = y => H - 2 - (Math.max(0, Math.min(100, y)) / 100) * (H - 4);
+  const d = points.map((p, i) => (i ? 'L' : 'M') + X(p.x).toFixed(1) + ' ' + Y(p.y).toFixed(1)).join(' ');
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-label="5-hour utilisation, last 24h"><line class="base" x1="0" y1="${H-2}" x2="${W}" y2="${H-2}"/><path d="${d}"/></svg>`;
+}
+
+let histCache = [];
+async function load() {
+  const [s, h] = await Promise.all([fetch('/api/state').then(r => r.json()), fetch('/api/history?hours=168').then(r => r.json())]);
+  histCache = h;
+  // Our own source changed on disk (a shipped UI fix): this page is still running the old renderer, so
+  // reload once. First sighting only records the stamp; it never loops.
+  if (s.uiBuild) { if (!window.__uiBuild) window.__uiBuild = s.uiBuild; else if (window.__uiBuild !== s.uiBuild) { location.reload(); return; } }
+  const stalePoll = s.pollAgeSec == null || s.pollAgeSec > 20 * 60;
+  $('#meta').textContent = `last poll ${ago(s.generatedAt)} · auto-refreshes every minute`;
+  $('#meta').className = 'meta' + (stalePoll ? ' bad' : '');
+  if (stalePoll) $('#meta').textContent = `⚠ poller silent (last poll ${ago(s.generatedAt)}): check the claude-usage service (launchd or systemd)`;
+
+  const rec = s.accounts.find(a => a.id === s.recommended);
+  const withFable = s.accounts.filter(a => a.drainTier === 0);
+  const fableSum = withFable.length
+    ? `Fable left on <b>${withFable.map(a => `${esc(a.label)}${a.fableLeft == null ? '' : ' ' + esc(a.fableLeft) + '%'}`).join('</b>, <b>')}</b>`
+    : 'No account has Fable left. Everything is on the 7-day Fable cap until it rolls over.';
+  $('#hero').innerHTML = rec
+    ? `<div><div class="sub">Use next</div><div class="big">${esc(rec.label)}</div>
+       <div class="fablesum" style="margin-top:6px">${rec.drainTier === 0 ? `Fable <b>${rec.fableLeft == null ? 'open' : esc(rec.fableLeft) + '% left'}</b>` : 'Fable gone on this one'}</div></div>
+       <div><div class="sub">fully resets</div><div class="big" style="font-size:30px">${fmtIn(rec.fullResetAt) || '-'}</div>
+       <div class="sub">${Math.round(100 - (rec.eff7 ?? 0))}% weekly · ${Math.round(100 - rec.eff5)}% 5-hour left</div></div>
+       <div><div class="sub">Fable across accounts</div><div class="fablesum" style="max-width:320px">${fableSum}</div></div>
+       <div class="sub" style="margin-left:auto">launch: <code>ccr ${esc(rec.id)}</code> &nbsp;or&nbsp; <code>ccr</code></div>`
+    : `<div><div class="sub">Use next</div><div class="big" style="font-size:28px">No account with data</div></div><div class="sub">Log in to at least one account and press Refresh now.</div>`;
+
+  const cut = Date.now() - 24 * 3600 * 1000;
+  const GROUP = { 0: ['good', 'Fable left: drain these first'], 1: ['', 'Usable, but Fable is gone'], 2: ['', 'Maxed out: wait for the reset'], 3: ['', 'Login broken: not used until fixed'] };
+  let prevTier = null;
+  $('#grid').innerHTML = s.accounts.map((a, idx) => {
+    let head = '';
+    if (a.drainTier !== prevTier) { const [cls, txt] = GROUP[a.drainTier] || ['', '']; head = `<div class="grouphead ${cls}">${txt}</div>`; prevTier = a.drainTier; }
+    // One line per LOGIN, not per slot: a slot re-logged as another account must not splice two accounts'
+    // histories into one sawtooth. Old rows carry no email and are left out rather than guessed.
+    const pts = h.filter(r => r.e && a.email && r.e.toLowerCase() === a.email.toLowerCase() && new Date(r.t) >= cut && r.h5 != null).map(r => ({ x: new Date(r.t).getTime(), y: r.h5 }));
+    const badges = [
+      a.id === s.recommended ? '<span class="badge rec">use next</span>' : (a.drainTier < 2 ? `<span class="badge">#${idx + 1} in order</span>` : ''),
+      a.drainTier === 0 ? `<span class="badge fable">Fable ${a.fableLeft == null ? 'open' : esc(a.fableLeft) + '% left'}</span>` : a.drainTier === 3 ? '' : '<span class="badge nofable">no Fable</span>',
+      a.activeSession ? '<span class="badge live">session active</span>' : '',
+      a.needsLogin ? '<span class="badge login">not logged in</span>' : '',
+      a.stale ? '<span class="badge stale">stale</span>' : '',
+      a.locked ? '<span class="badge login">locked</span>' : '',
+      a.remote ? `<span class="badge" style="border-color:var(--accent);color:var(--accent)">${esc(a.remote)}</span>` : '',
+    ].join('');
+    const models = a.models && Object.keys(a.models).length ? Object.entries(a.models).map(([k, v]) => meter(`7-day ${v.name}`, a.effModels?.[k], v.resetsAt, k === 'fable' && a.drainTier === 0)).join('') : '';
+    const err = a.error ? `<div class="err">${a.sharedChain ? esc(a.error) : a.chainLost ? 'Login REVOKED: another copy of this login refreshed first, so this copy can never refresh again. Showing last known numbers.' : a.needsLogin ? `Run <code>ccr ${esc(a.id)}</code> and <code>/login</code> once.` : (a.tokenExpired ? 'Token expired. Open this account once (<code>ccr ' + esc(a.id) + '</code>) to refresh it. Showing last known numbers.' : 'Last poll failed: <code>' + esc(a.error) + '</code>')}</div>` : '';
+    return `${head}<div class="card ${a.id === s.recommended ? 'rec' : ''} ${a.drainTier === 0 ? 'fable' : ''} ${a.drainTier >= 2 ? 'maxed' : ''}">
+      <h2>${esc(a.label)} ${badges}</h2>
+      <div class="who">${esc(a.email || a.configDir)}${a.plan ? ` · ${esc(String(a.tier || a.plan).replace('default_claude_', '').replace(/_/g, ' '))}` : ''}</div>
+      ${a.drainTier === 2 && a.unblockAt ? `<div class="foot" style="color:var(--serious)">usable again ${fmtIn(a.unblockAt).replace('resets ', '')}</div>` : ''}
+      ${meter('5-hour', a.eff5, a.fiveHour?.resetsAt)}
+      ${meter('7-day', a.eff7, a.sevenDay?.resetsAt)}
+      ${models}
+      ${a.extra && a.extra.enabled ? `<div class="foot">Extra usage on · ${a.extra.pct == null ? '' : Math.round(a.extra.pct) + '% of cap used'}${a.extra.capHit ? ' · cap reached' : ''}</div>` : ''}
+      ${spark(pts)}
+      <div class="foot">${a.fetchedAt ? `updated ${ago(a.fetchedAt)}` : 'no data yet'}</div>
+      ${err}
+    </div>`;
+  }).join('');
+
+  const tb = $('#hist tbody');
+  tb.innerHTML = h.slice().reverse().slice(0, 600).map(r => `<tr><td>${new Date(r.t).toLocaleString()}</td><td>${esc(r.id)}</td><td>${esc(r.h5)}%</td><td>${esc(r.d7)}%</td></tr>`).join('');
+  $('#hist').style.display = h.length ? 'table' : 'none';
+}
+$('#pollnow').onclick = async () => { $('#pollnow').disabled = true; $('#pollnow').textContent = 'polling…'; try { await fetch('/api/poll', { method: 'POST' }); await load(); } finally { $('#pollnow').disabled = false; $('#pollnow').textContent = 'Refresh now'; } };
+load().catch(e => $('#meta').textContent = 'error: ' + e.message);
+setInterval(() => load().catch(() => {}), 60000);
+</script>
+</body>
+</html>

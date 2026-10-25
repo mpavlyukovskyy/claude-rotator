@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# ccr                    launch claude on the account with the most headroom
+# ccr [--claude-flags]   same; args starting with - go to claude:  ccr --resume
+# ccr <id|N> [args]      launch claude on that account (id from accounts.json, or 1..N)
+# ccr ls                 print the usage table
+# ccr web                open the dashboard
+# ccr add <name>         add an account slot (~/.claude-accounts/<name>) and log in to it
+# ccr pick [--not a,b] [--env]
+#                        print the best account; --env prints export lines for `eval`
+# ccr run [claude args]  headless run on the best account; on a usage-limit error, retry once on the next
+# Any extra args go to claude:  ccr two --resume
+set -euo pipefail
+
+# Resolve our own location through the ~/.local/bin symlink, so the app dir is wherever install.sh put it.
+SELF="$0"
+while [ -L "$SELF" ]; do t=$(readlink "$SELF"); case "$t" in /*) SELF="$t";; *) SELF="$(dirname "$SELF")/$t";; esac; done
+APP="$(cd "$(dirname "$SELF")" && pwd)"
+export CLAUDE_USAGE_DATA="${CLAUDE_USAGE_DATA:-$(dirname "$APP")}"
+export CLAUDE_USAGE_CONFIG="${CLAUDE_USAGE_CONFIG:-$CLAUDE_USAGE_DATA/accounts.json}"
+NODE="${CLAUDE_USAGE_NODE:-$(command -v node || true)}"
+[ -n "$NODE" ] || { echo "ccr: node not found on PATH (Node 18 or later is needed)" >&2; exit 1; }
+if [ ! -f "$CLAUDE_USAGE_CONFIG" ]; then
+  echo "ccr: no accounts file at $CLAUDE_USAGE_CONFIG. Run ./install.sh from the claude-rotator repo first." >&2; exit 1
+fi
+H() { "$NODE" "$APP/ccr-helper.js" "$@"; }
+API="http://127.0.0.1:$(H port)"
+CLAUDE_CMD="$(type -P claude || true)"
+need_claude() { [ -n "$CLAUDE_CMD" ] || { echo "ccr: the claude CLI is not on PATH" >&2; exit 1; }; }
+
+state() { curl -sf --max-time 3 "$API/api/state" 2>/dev/null || "$NODE" "$APP/poll-once.js"; }
+
+title() { # name the terminal window/tab after the account, so two Claude windows are never confused
+  if [ -t 1 ]; then
+    printf '\033]0;Claude · %s · %s\007' "$1" "${PWD##*/}"
+    [ -n "${TMUX:-}" ] && printf '\033k%s\033\\' "$1"
+  fi
+  return 0
+}
+
+case "${1:-}" in
+  ls|list) state | H ls; exit 0;;
+  web|open)
+    if command -v open >/dev/null 2>&1 && [ "$(uname)" = Darwin ]; then open "$API/"
+    elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$API/" >/dev/null 2>&1 || echo "$API/"
+    else echo "$API/"; fi
+    exit 0;;
+  pick)
+    shift; not=""; envout=0
+    while [ $# -gt 0 ]; do case "$1" in --not) not="${2:-}"; shift 2;; --env) envout=1; shift;; *) shift;; esac; done
+    state | H pick "$not" "$envout"
+    exit $?;;
+  add)
+    shift; name="${1:-}"; nologin=0
+    [ "${2:-}" = "--no-login" ] && nologin=1
+    [ -n "$name" ] || { echo "usage: ccr add <name> [--no-login]" >&2; exit 1; }
+    dir=$(H add "$name")
+    "$NODE" "$APP/setup-dirs.js" "$name"
+    curl -sf -X POST --max-time 30 "$API/api/poll" >/dev/null 2>&1 || true
+    if [ "$nologin" = 1 ] || [ ! -t 0 ] || [ ! -t 1 ]; then
+      echo "added $name. Log in to it with:  ccr $name   (then type /login)"
+      exit 0
+    fi
+    need_claude
+    echo "added $name. Opening claude in $dir: log in with the account you want in this slot." >&2
+    if "$CLAUDE_CMD" auth --help 2>/dev/null | grep -q 'login'; then
+      CLAUDE_CONFIG_DIR="$dir" "$CLAUDE_CMD" auth login || true
+    else
+      echo "type /login in the session that opens" >&2
+      CLAUDE_CONFIG_DIR="$dir" "$CLAUDE_CMD" || true
+    fi
+    curl -sf -X POST --max-time 30 "$API/api/poll" >/dev/null 2>&1 || true
+    exit 0;;
+  run)
+    shift; need_claude
+    tried=""
+    for attempt in 1 2; do
+      envs=$(state | H pick "$tried" 1) || exit 2
+      acct=$(printf '%s\n' "$envs" | sed -n "s/^export CLAUDE_USAGE_ACCOUNT='\(.*\)'$/\1/p")
+      out=$(mktemp "${TMPDIR:-/tmp}/ccr.out.XXXXXX"); err=$(mktemp "${TMPDIR:-/tmp}/ccr.err.XXXXXX")
+      echo "ccr run: $acct" >&2
+      set +e
+      ( eval "$envs"; "$CLAUDE_CMD" "$@" 2> >(tee "$err" >&2) ) | tee "$out"
+      rc=${PIPESTATUS[0]}
+      set -e
+      limited=0
+      if [ "$rc" != 0 ] && grep -Eiq 'rate.?limit|usage limit|limit reached|hit your limit|quota|(^|[^0-9])429([^0-9]|$)|out of extra usage' "$out" "$err"; then limited=1; fi
+      rm -f "$out" "$err"
+      if [ "$limited" = 1 ] && [ "$attempt" = 1 ]; then
+        echo "ccr run: $acct hit a usage limit, retrying once on the next account" >&2
+        tried="$acct"; continue
+      fi
+      exit "$rc"
+    done;;
+  -h|--help|help) sed -n '2,11p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0;;
+esac
+
+need_claude
+# The first arg names an account unless it starts with "-": `ccr --resume` picks one and passes it on.
+sel=""
+case "${1:-}" in
+  ""|-*) ;;
+  *) sel="$1"; shift;;
+esac
+if [ -z "$sel" ]; then
+  line=$(state | H pick "" 0 2>/dev/null) || { echo "ccr: no account has usage data and headroom yet. Run 'ccr ls'; log in with 'ccr <id>' then /login, or add one with 'ccr add <name>'." >&2; exit 1; }
+  sel="${line%%$'\t'*}"
+fi
+IFS=$'\t' read -r id dir isdef label < <(H resolve "$sel") || exit 1
+[ -n "${id:-}" ] || exit 1
+echo "-> claude on $label ($id)" >&2
+title "$label"
+
+# An interactive launch runs on the slot's own login, so drop any token a parent shell exported.
+unset CLAUDE_CODE_OAUTH_TOKEN
+export CLAUDE_PICK_ACCOUNT="$id"
+if [ "$isdef" = "1" ]; then unset CLAUDE_CONFIG_DIR; exec "$CLAUDE_CMD" "$@"; fi
+mkdir -p "$dir"
+CLAUDE_CONFIG_DIR="$dir" exec "$CLAUDE_CMD" "$@"
