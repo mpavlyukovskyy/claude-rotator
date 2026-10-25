@@ -16,7 +16,7 @@ const [cmd, ...args] = process.argv.slice(2);
 const die = (msg, code = 1) => { process.stderr.write(msg + '\n'); process.exit(code); };
 const readStdin = () => { try { return fs.readFileSync(0, 'utf8'); } catch (_) { return ''; } };
 const NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
-const RESERVED = new Set(['ls', 'list', 'web', 'open', 'pick', 'add', 'run', 'help']);
+const RESERVED = new Set(['ls', 'list', 'web', 'open', 'pick', 'add', 'run', 'help', 'ui', 'login', 'mcp']);
 const shq = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
 
 function cfgOrDie() {

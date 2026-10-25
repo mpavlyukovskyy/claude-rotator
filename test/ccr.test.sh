@@ -35,14 +35,15 @@ out=$(R bogus); rc=$?
 check "ccr bogus fails" "$rc" 1
 check "ccr bogus never starts claude" "$out" ""
 
-for bad in ls run web add pick help 123 9lives Bad "-x" "a/b" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; do
+for bad in ls run web add pick help ui login mcp 123 9lives Bad "-x" "a/b" "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; do
   R add "$bad" --no-login >/dev/null; rc=$?
   check "ccr add '$bad' is refused" "$([ "$rc" != 0 ] && echo refused || echo accepted)" refused
 done
 node -e 'process.exit(require(process.argv[1]).accounts.length===2?0:1)' "$D/accounts.json"
 check "refused names left accounts.json alone" "$?" 0
-R add a_b-1 --no-login >/dev/null; rc=$?
+out=$(R add a_b-1 --no-login 2>/dev/null); rc=$?
 check "ccr add a_b-1 is accepted" "$rc" 0
+check "ccr add --no-login points at ccr login <id>" "$(printf '%s\n' "$out" | grep -c 'ccr login a_b-1')" 1
 node -e 'process.exit(require(process.argv[1]).accounts.some(a=>a.id==="a_b-1")?0:1)' "$D/accounts.json"
 check "a_b-1 is in accounts.json" "$?" 0
 # reregister: kept ~/.claude-accounts dirs come back at the END, existing order and flags untouched,

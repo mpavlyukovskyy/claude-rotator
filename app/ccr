@@ -4,10 +4,13 @@
 # ccr <id|N> [args]      launch claude on that account (id from accounts.json, or 1..N)
 # ccr ls                 print the usage table
 # ccr web                open the dashboard
+# ccr ui                 open the dashboard's Setup page (logins, provider keys, gateway, MCP)
 # ccr add <name>         add an account slot (~/.claude-accounts/<name>) and log in to it
+# ccr login <id>         log in to an existing account slot (a new subscription, or after a logout)
 # ccr pick [--not a,b] [--env]
 #                        print the best account; --env prints export lines for `eval`
 # ccr run [claude args]  headless run on the best account; on a usage-limit error, retry once on the next
+# ccr mcp                MCP server on stdio:  claude mcp add --scope user claude-rotator -- ccr mcp
 # Any extra args go to claude:  ccr two --resume
 set -euo pipefail
 
@@ -37,12 +40,41 @@ title() { # name the terminal window/tab after the account, so two Claude window
   return 0
 }
 
+open_url() {
+  if command -v open >/dev/null 2>&1 && [ "$(uname)" = Darwin ]; then open "$1"
+  elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$1" >/dev/null 2>&1 || echo "$1"
+  else echo "$1"; fi
+}
+
+# Log in to one account dir with `claude auth login` where this claude has it, else a session to type /login in.
+login_to() { # dir isdefault
+  local e=(env -u CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CONFIG_DIR="$1")
+  [ "$2" = 1 ] && e=(env -u CLAUDE_CODE_OAUTH_TOKEN -u CLAUDE_CONFIG_DIR)
+  if "$CLAUDE_CMD" auth --help 2>/dev/null | grep -q 'login'; then
+    "${e[@]}" "$CLAUDE_CMD" auth login || true
+  else
+    echo "type /login in the session that opens" >&2
+    "${e[@]}" "$CLAUDE_CMD" || true
+  fi
+  curl -sf -X POST --max-time 30 "$API/api/poll" >/dev/null 2>&1 || true
+}
+
 case "${1:-}" in
   ls|list) state | H ls; exit 0;;
-  web|open)
-    if command -v open >/dev/null 2>&1 && [ "$(uname)" = Darwin ]; then open "$API/"
-    elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$API/" >/dev/null 2>&1 || echo "$API/"
-    else echo "$API/"; fi
+  web|open) open_url "$API/"; exit 0;;
+  ui)
+    if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$API/healthz" 2>/dev/null)" = 000 ]; then
+      echo "ccr ui: the dashboard is not answering at $API/. Re-run ./install.sh from the claude-rotator repo to start it." >&2; exit 1
+    fi
+    open_url "$API/#setup"; exit 0;;
+  login)
+    shift; [ -n "${1:-}" ] || { echo "usage: ccr login <id>" >&2; exit 1; }
+    IFS=$'\t' read -r id dir isdef label < <(H resolve "$1") || exit 1
+    [ -n "${id:-}" ] || exit 1
+    need_claude
+    [ "$isdef" = 1 ] || mkdir -p "$dir"
+    echo "Logging in to $id ($dir). Sign in with the subscription you want in this slot." >&2
+    login_to "$dir" "$isdef"
     exit 0;;
   pick)
     shift; not=""; envout=0
@@ -57,18 +89,12 @@ case "${1:-}" in
     "$NODE" "$APP/setup-dirs.js" "$name"
     curl -sf -X POST --max-time 30 "$API/api/poll" >/dev/null 2>&1 || true
     if [ "$nologin" = 1 ] || [ ! -t 0 ] || [ ! -t 1 ]; then
-      echo "added $name. Log in to it with:  ccr $name   (then type /login)"
+      echo "added $name. Log in to it with:  ccr login $name"
       exit 0
     fi
     need_claude
     echo "added $name. Opening claude in $dir: log in with the account you want in this slot." >&2
-    if "$CLAUDE_CMD" auth --help 2>/dev/null | grep -q 'login'; then
-      CLAUDE_CONFIG_DIR="$dir" "$CLAUDE_CMD" auth login || true
-    else
-      echo "type /login in the session that opens" >&2
-      CLAUDE_CONFIG_DIR="$dir" "$CLAUDE_CMD" || true
-    fi
-    curl -sf -X POST --max-time 30 "$API/api/poll" >/dev/null 2>&1 || true
+    login_to "$dir" 0
     exit 0;;
   run)
     shift; need_claude
@@ -91,7 +117,8 @@ case "${1:-}" in
       fi
       exit "$rc"
     done;;
-  -h|--help|help) sed -n '2,11p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0;;
+  mcp) shift; exec "$NODE" "$APP/mcp.js" "$@";;
+  -h|--help|help) sed -n '2,14p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0;;
 esac
 
 need_claude

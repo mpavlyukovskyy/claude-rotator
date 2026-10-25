@@ -70,5 +70,6 @@ if [ -d "$ACC" ]; then
 fi
 
 # --- data dir
+# All of DATA goes, state/login-*.command files from the Setup page included.
 if [ -d "$DATA" ]; then rm -rf "$DATA"; echo "removed $DATA"; fi
 echo "claude-rotator uninstalled."

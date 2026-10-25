@@ -63,9 +63,17 @@ done
 # --- 2. app files ------------------------------------------------------------
 mkdir -p "$DATA/app/public" "$DATA/state/live" "$DATA/secrets"
 chmod 700 "$DATA/secrets"
+# Setup token: the dashboard puts it only into pages loaded from 127.0.0.1, and its setup routes refuse
+# any change that does not send it back. Kept across upgrades.
+UI_TOKEN="$DATA/secrets/ui-token"
+if ! grep -q '^[0-9a-f]\{64\}$' "$UI_TOKEN" 2>/dev/null; then
+  ( umask 077; "$NODE" -p 'require("crypto").randomBytes(32).toString("hex")' > "$UI_TOKEN" )
+  echo "setup token -> $UI_TOKEN (new, mode 0600)"
+fi
+chmod 600 "$UI_TOKEN"
 cp "$SRC"/app/lib.js "$SRC"/app/server.js "$SRC"/app/statusline.js "$SRC"/app/statusline-chain.js "$SRC"/app/poll-once.js \
    "$SRC"/app/setup-dirs.js "$SRC"/app/ccr-helper.js "$SRC"/app/accuracy-check.js "$SRC"/app/ccr "$SRC"/app/shell.sh \
-   "$SRC"/app/node-run "$DATA/app/"
+   "$SRC"/app/node-run "$SRC"/app/providers.js "$SRC"/app/mcp.js "$DATA/app/"
 cp "$SRC/app/public/index.html" "$DATA/app/public/"
 [ "$WITH_GATEWAY" = 1 ] && cp "$SRC"/app/gateway.js "$SRC"/app/watchdog.js "$DATA/app/"
 chmod +x "$DATA/app/ccr" "$DATA/app/node-run"
@@ -286,5 +294,6 @@ if [ "$NO_SERVICE" != 1 ]; then
   fi
 fi
 echo
-echo "Next: ccr ls          (accounts and headroom)"
+echo "Next: ccr ui          (setup page: logins, fallback keys, gateway, MCP)"
+echo "      ccr ls          (accounts and headroom)"
 echo "      ccr add <name>  (add a second subscription, then log in to it)"

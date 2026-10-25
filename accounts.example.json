@@ -3,5 +3,14 @@
   "pollMinutes": 5,
   "accounts": [
     { "id": "main", "label": "Main", "configDir": "~/.claude", "default": true }
-  ]
+  ],
+  "fallback": {
+    "enabled": true,
+    "order": ["fireworks", "openrouter", "anthropic"],
+    "models": {
+      "fireworks": "accounts/fireworks/models/kimi-k3",
+      "openrouter": "moonshotai/kimi-k3",
+      "anthropic": "claude-sonnet-5-5"
+    }
+  }
 }

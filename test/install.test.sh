@@ -108,6 +108,8 @@ ok "C seeded .claude.json has no oauthAccount or userID" \
   node -e 'const j=require(process.argv[1]); process.exit(!j.oauthAccount && !j.userID && j.numStartups===3 ? 0 : 1)' "$T/.claude-accounts/two/.claude.json"
 ls_out=$(E "$CCR" ls 2>&1)
 ok "C ccr ls lists two as NOT LOGGED IN" sh -c 'printf "%s\n" "$1" | grep "^two" | grep -q "NOT LOGGED IN"' _ "$ls_out"
+mcp_out=$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}' | E "$CCR" mcp 2>/dev/null)
+ok "C installed ccr mcp answers server/discover" sh -c 'printf "%s" "$1" | grep -q "\"supportedVersions\""' _ "$mcp_out"
 
 # ---- S. status line
 # an older install pinned the node path: a reinstall recognises it as ours and updates it

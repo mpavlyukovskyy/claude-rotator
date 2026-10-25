@@ -3,7 +3,10 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const crypto = require('crypto');
+const { execFile } = require('child_process');
 const L = require('./lib');
+const P = require('./providers');
 
 fs.mkdirSync(L.LIVE_DIR, { recursive: true });
 const STATE_FILE = path.join(L.STATE_DIR, 'state.json');
@@ -224,8 +227,8 @@ function history(hours) {
   } catch (_) { return []; }
 }
 
-function send(res, code, body, type = 'application/json') {
-  res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store' });
+function send(res, code, body, type = 'application/json', headers = {}) {
+  res.writeHead(code, { 'Content-Type': type, 'Cache-Control': 'no-store', ...headers });
   res.end(typeof body === 'string' ? body : JSON.stringify(body));
 }
 
@@ -256,23 +259,241 @@ function requestAllowed(req) {
   try { const o = new URL(req.headers.origin); return hostAllowed(o.hostname, Number(o.port || 80)); } catch (_) { return false; }
 }
 
+// ---- Setup token -----------------------------------------------------------------------------------------
+// A random secret in DATA/secrets/ui-token (install.sh writes it; the server writes one if it is missing).
+// The page gets it in a meta tag only when it was loaded through a loopback name on our own port, and every
+// state-changing setup route must send it back in x-rotator-ui-token. Another site can make the browser send
+// requests here, but it cannot read the page, so it never learns the token.
+const UI_TOKEN_FILE = path.join(L.DATA, 'secrets', 'ui-token');
+function uiToken() {
+  try { const t = fs.readFileSync(UI_TOKEN_FILE, 'utf8').trim(); return /^[A-Za-z0-9_-]{32,}$/.test(t) ? t : ''; } catch (_) { return ''; }
+}
+function ensureUiToken() {
+  if (uiToken()) return;
+  fs.mkdirSync(path.dirname(UI_TOKEN_FILE), { recursive: true, mode: 0o700 });
+  try { fs.writeFileSync(UI_TOKEN_FILE, crypto.randomBytes(32).toString('hex') + '\n', { mode: 0o600, flag: 'wx' }); log('setup token -> ' + UI_TOKEN_FILE); }
+  catch (e) { if (e.code !== 'EEXIST') log('could not write the setup token: ' + e.message); }
+}
+// The socket's peer address, unlike the Host header, is not the client's to choose. A dashboard bound off
+// loopback must not hand the token to a LAN client that sends Host: 127.0.0.1. The test hook can only
+// demote a request to "not local", so setting it never grants anything.
+const TEST_REMOTE_HOOK = process.env.CLAUDE_USAGE_TEST_REMOTE_HOOK === '1';
+function loopbackPeer(req) {
+  if (TEST_REMOTE_HOOK && req.headers['x-test-remote-nonlocal']) return false;
+  const a = String((req.socket && req.socket.remoteAddress) || '').toLowerCase();
+  return /^127\./.test(a) || a === '::1' || /^::ffff:127\./.test(a);
+}
+// true when the request comes from this machine and carries the setup token.
+// Callers: if (!requireUiToken(req)) return send(res, 403, ...)
+function requireUiToken(req) {
+  if (!loopbackPeer(req)) return false;
+  const want = Buffer.from(uiToken()), got = Buffer.from(String(req.headers['x-rotator-ui-token'] || ''));
+  return want.length >= 32 && got.length === want.length && crypto.timingSafeEqual(got, want);
+}
+const NO_TOKEN = { error: 'setup token missing or wrong, or the request did not come from this machine: reload the dashboard from http://127.0.0.1 on this machine' };
+// The token goes only into a page loaded from this machine as 127.0.0.1 / localhost / [::1] on our port,
+// never through an allowedHosts name (those exist so another machine can read /api/state).
+function loopbackRequest(req) {
+  const m = String(req.headers.host || '').match(/^(\[[^\]]*\]|[^:]+)(?::(\d+))?$/);
+  return loopbackPeer(req) && !!m && LOOPBACK.has(m[1].toLowerCase()) && Number(m[2] || 80) === PORT;
+}
+function indexHtml(req) {
+  const html = fs.readFileSync(path.join(PUBLIC, 'index.html'), 'utf8');
+  const t = loopbackRequest(req) ? uiToken() : '';
+  return html.replace('<meta name="rotator-ui-token" content="">', `<meta name="rotator-ui-token" content="${t}">`);
+}
+function readJson(req, limit = 64 * 1024) {
+  return new Promise((resolve, reject) => {
+    const chunks = []; let size = 0;
+    const fail = (status, msg) => reject(Object.assign(new Error(msg), { status }));
+    // Past the limit, keep reading but drop the bytes, so the 413 still reaches the client.
+    req.on('data', c => { size += c.length; if (size > limit) { if (chunks.length) { chunks.length = 0; fail(413, 'request body too large'); } } else chunks.push(c); });
+    req.on('end', () => {
+      if (size > limit) return fail(413, 'request body too large');
+      if (!chunks.length) return resolve({});
+      try { const v = JSON.parse(Buffer.concat(chunks).toString('utf8')); v && typeof v === 'object' && !Array.isArray(v) ? resolve(v) : fail(400, 'body must be a JSON object'); }
+      catch (_) { fail(400, 'body is not valid JSON'); }
+    });
+    req.on('error', reject);
+  });
+}
+
+// ---- Setup view data ----------------------------------------------------------------------------------------
+const MAC = process.platform === 'darwin';
+const OPEN_CMD = process.env.CLAUDE_USAGE_OPEN_CMD || 'open'; // test hook: a fake `open` that records its argument
+const GATEWAY_ENV = path.join(L.DATA, 'secrets', 'gateway.env');
+const MCP_LINE = 'claude mcp add --scope user claude-rotator -- ccr mcp';
+const tilde = p => String(p || '').replace(L.HOME, '~');
+function run(cmd, args, opts = {}) {
+  return new Promise(resolve => execFile(cmd, args, { timeout: 15000, encoding: 'utf8', ...opts },
+    (e, stdout, stderr) => resolve({ code: e ? (typeof e.code === 'number' ? e.code : 1) : 0, stdout: stdout || '', stderr: stderr || (e && !stdout ? e.message : '') })));
+}
+let claudeSeen = null;
+async function claudeInfo() {
+  if (claudeSeen && Date.now() - claudeSeen.at < 60000) return claudeSeen.v;
+  const r = await run(process.env.CLAUDE_BIN || 'claude', ['--version'], { timeout: 8000, cwd: L.STATE_DIR });
+  const v = r.code === 0 ? { found: true, version: r.stdout.trim().split('\n')[0].replace(/\s*\(Claude Code\)\s*$/, '') } : { found: false, version: null };
+  claudeSeen = { at: Date.now(), v };
+  return v;
+}
+function gatewayEnv() {
+  const env = {};
+  try {
+    for (const line of fs.readFileSync(GATEWAY_ENV, 'utf8').split('\n')) {
+      const m = line.match(/^\s*(?:export\s+)?([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
+      if (m && !line.trim().startsWith('#')) env[m[1]] = m[2].replace(/^(['"])(.*)\1$/, '$2');
+    }
+  } catch (_) { return null; }
+  return env;
+}
+async function gatewayInfo() {
+  const env = gatewayEnv();
+  if (!env || !env.CLAUDE_USAGE_GATEWAY_KEY) return { installed: false, url: null, running: false };
+  const url = `http://127.0.0.1:${Number(env.CLAUDE_USAGE_GATEWAY_PORT || 7799)}`;
+  let running = false;
+  try { running = (await fetch(url + '/healthz', { signal: AbortSignal.timeout(1500) })).ok; } catch (_) {}
+  return { installed: true, url, running };
+}
+// Is the claude-rotator MCP server registered with Claude Code (user scope, or local scope in any project)?
+let mcpSeen = { mtime: -1, v: false };
+function mcpRegistered() {
+  const f = path.join(L.HOME, '.claude.json');
+  try {
+    const mtime = fs.statSync(f).mtimeMs;
+    if (mtime !== mcpSeen.mtime) {
+      const j = JSON.parse(fs.readFileSync(f, 'utf8'));
+      const has = o => !!(o && o.mcpServers && o.mcpServers['claude-rotator']);
+      mcpSeen = { mtime, v: has(j) || Object.values(j.projects || {}).some(has) };
+    }
+    return mcpSeen.v;
+  } catch (_) { return false; }
+}
+// providers.config() fills the defaults (an install from before v2 has no "fallback" key in accounts.json).
+function providersInfo() {
+  let list, fallback;
+  try { list = P.list(); fallback = { enabled: !!P.config().enabled }; }
+  catch (_) { return { available: false, configured: 0, total: 0, fallback: { enabled: false } }; }
+  return { available: true, configured: list.filter(p => p.configured).length, total: list.length, fallback };
+}
+async function setupView() {
+  const cfg = L.loadConfig();
+  const polled = new Map((state.accounts || []).map(a => [a.id, a]));
+  const accounts = cfg.accounts.map(a => {
+    const r = polled.get(a.id);
+    const status = !r ? 'pending' : r.needsLogin ? 'login' : r.ok ? 'ok' : 'error';
+    return { id: a.id, label: a.label || a.id, configDir: tilde(a.configDir), default: !!a.default, status, email: r ? r.email || null : null,
+      error: status === 'error' ? String(r.error || '').slice(0, 200) : null };
+  });
+  const [claude, gateway] = await Promise.all([claudeInfo(), gatewayInfo()]);
+  const lastPoll = state.generatedAt ? Math.round((Date.now() - new Date(state.generatedAt).getTime()) / 1000) : null;
+  return {
+    platform: process.platform, canOpenTerminal: MAC, claude,
+    dashboard: { up: true, url: `http://127.0.0.1:${PORT}`, pollAgeSec: lastPoll },
+    accounts, loggedIn: accounts.filter(a => a.status === 'ok').length,
+    providers: providersInfo(), gateway,
+    mcp: { command: MCP_LINE, registered: mcpRegistered() },
+  };
+}
+// accounts.json has one writer at a time
+let accountsQueue = Promise.resolve();
+function addAccount(name) {
+  const job = accountsQueue.then(async () => {
+    const add = await run(process.execPath, [path.join(__dirname, 'ccr-helper.js'), 'add', name]);
+    if (add.code !== 0) return { status: 400, body: { error: add.stderr.trim().replace(/^ccr add: /, '') || 'could not add the account' } };
+    const dirs = await run(process.execPath, [path.join(__dirname, 'setup-dirs.js'), name]);
+    if (dirs.code !== 0) log(`setup-dirs ${name} failed: ${dirs.stderr.trim()}`);
+    return { status: 200, body: { ok: true, id: name, dir: tilde(add.stdout.trim()), login: `ccr login ${name}` } };
+  });
+  accountsQueue = job.catch(() => {});
+  return job;
+}
+const shq = s => "'" + String(s).replace(/'/g, "'\\''") + "'";
+// macOS: a .command file opens in Terminal and runs the login there. The browser never sees a password.
+// The file deletes itself as its last step (uninstall.sh removes any left in DATA/state with the rest).
+async function openLogin(id) {
+  const f = path.join(L.STATE_DIR, `login-${id}.command`);
+  // Terminal runs the file without the user's shell rc files, so hand it the service's PATH, node and data dir.
+  const env = { PATH: `${process.env.PATH || ''}:/usr/bin:/bin`, CLAUDE_USAGE_NODE: process.execPath, CLAUDE_USAGE_DATA: L.DATA, CLAUDE_USAGE_CONFIG: L.CONFIG_PATH };
+  fs.writeFileSync(f, ['#!/bin/bash', `# Written by the claude-rotator dashboard: log in to the "${id}" account.`,
+    ...Object.entries(env).map(([k, v]) => `export ${k}=${shq(v)}`),
+    `${shq(path.join(__dirname, 'ccr'))} login ${shq(id)}`,
+    'echo; read -n 1 -s -r -p "Done. Press any key to close this window."; echo',
+    `rm -f ${shq(f)}`, ''].join('\n'), { mode: 0o700 });
+  fs.chmodSync(f, 0o700);
+  const r = await run(OPEN_CMD, [f]);
+  return r.code === 0 ? { status: 200, body: { ok: true } } : { status: 500, body: { error: 'could not open Terminal: ' + (r.stderr.trim() || 'exit ' + r.code) } };
+}
+
+// ---- fallback providers API (providers.js) ----------------------------------------------------------
+// GET /api/providers lists providers without keys. Everything that changes state or spends money needs the
+// setup token. A key goes in once and never comes back out: responses carry only the masked hint.
+// A body that does not parse is the caller's mistake (400), whatever error readJson rejects with.
+const jsonBody = req => readJson(req).catch(e => { throw Object.assign(new Error(e.message || 'bad json'), { code: (e.status || e.code) === 413 ? 413 : 400 }); });
+async function providersRoute(req, res, u) {
+  const m = u.pathname.match(/^\/api\/providers(?:\/([a-z-]+)(\/test)?)?$/);
+  const isFallback = u.pathname === '/api/fallback';
+  if (!m && !isFallback) return false;
+  if (req.method === 'GET' && m && !m[1]) { send(res, 200, { providers: P.list(), fallback: P.config() }); return true; }
+  if (req.method !== 'POST' && req.method !== 'DELETE') { send(res, 405, { error: 'method not allowed' }); return true; }
+  if (!requireUiToken(req)) { send(res, 403, NO_TOKEN); return true; }
+  try {
+    if (isFallback && req.method === 'POST') { P.setFallback(await jsonBody(req)); send(res, 200, { ok: true, providers: P.list(), fallback: P.config() }); }
+    else if (m && m[1] && m[2] && req.method === 'POST') send(res, 200, await P.test(m[1]));
+    else if (m && m[1] && req.method === 'POST') { P.setKey(m[1], (await jsonBody(req)).apiKey); log(`provider key saved for ${m[1]}`); send(res, 200, { ok: true, providers: P.list() }); }
+    else if (m && m[1] && req.method === 'DELETE') { P.removeKey(m[1]); log(`provider key removed for ${m[1]}`); send(res, 200, { ok: true, providers: P.list() }); }
+    else send(res, 404, { error: 'not found' });
+  } catch (e) { send(res, e.status || (typeof e.code === 'number' ? e.code : 500), { error: e.message }); }
+  return true;
+}
+// ---- END fallback providers API ---------------------------------------------------------------------
+
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://x');
   if (!requestAllowed(req)) return send(res, 403, { error: 'forbidden: unexpected Host or Origin' });
   try {
-    if (u.pathname === '/' || u.pathname === '/index.html') return send(res, 200, fs.readFileSync(path.join(PUBLIC, 'index.html'), 'utf8'), 'text/html; charset=utf-8');
+    if (u.pathname === '/' || u.pathname === '/index.html') return send(res, 200, indexHtml(req), 'text/html; charset=utf-8', { 'X-Frame-Options': 'DENY', 'Content-Security-Policy': "frame-ancestors 'none'" });
     if (u.pathname === '/api/state') return send(res, 200, view());
     if (u.pathname === '/api/history') return send(res, 200, history(Number(u.searchParams.get('hours') || 168)));
     if (u.pathname === '/api/poll' && req.method === 'POST') { await pollAll(); return send(res, 200, view()); }
+    // --- setup UI routes (ui agent) ---
+    if (u.pathname === '/api/setup' && req.method === 'GET') return send(res, 200, await setupView());
+    if (u.pathname === '/api/accounts' && req.method === 'POST') {
+      if (!requireUiToken(req)) return send(res, 403, NO_TOKEN);
+      const { name } = await readJson(req);
+      if (typeof name !== 'string' || !name) return send(res, 400, { error: 'name is required' });
+      const r = await addAccount(name);
+      if (r.status === 200) pollAll().catch(e => log('poll error', e.message));
+      return send(res, r.status, r.body);
+    }
+    const ol = u.pathname.match(/^\/api\/accounts\/([^/]+)\/open-login$/);
+    if (ol && req.method === 'POST') {
+      if (!requireUiToken(req)) return send(res, 403, NO_TOKEN);
+      if (!MAC) return send(res, 400, { error: 'Open login in Terminal is macOS only. Run the ccr login command in a terminal.' });
+      let id = ''; try { id = decodeURIComponent(ol[1]); } catch (_) {}
+      if (!/^[a-z][a-z0-9_-]{0,31}$/.test(id) || !L.loadConfig().accounts.some(a => a.id === id)) return send(res, 404, { error: `no account "${id}"` });
+      const r = await openLogin(id);
+      return send(res, r.status, r.body);
+    }
+    if (u.pathname === '/api/gateway/key' && req.method === 'GET') {
+      if (!requireUiToken(req)) return send(res, 403, NO_TOKEN);
+      const env = gatewayEnv();
+      if (!env || !env.CLAUDE_USAGE_GATEWAY_KEY) return send(res, 404, { error: 'the gateway is not installed (./install.sh --with-gateway)' });
+      return send(res, 200, { key: env.CLAUDE_USAGE_GATEWAY_KEY });
+    }
+    // --- end setup UI routes ---
     if (u.pathname === '/healthz') {
       const v = view();
       const stalePoll = v.pollAgeSec == null || v.pollAgeSec > 20 * 60;
       return send(res, stalePoll ? 503 : 200, { ok: !stalePoll, pollAgeSec: v.pollAgeSec, accounts: v.accounts.map(a => ({ id: a.id, ok: a.ok, stale: !!a.stale, error: a.error || null })) });
     }
+    // --- fallback providers routes (providers agent) ---
+    if (await providersRoute(req, res, u)) return;
+    // --- end fallback providers routes ---
     send(res, 404, { error: 'not found' });
-  } catch (e) { send(res, 500, { error: e.message }); }
+  } catch (e) { send(res, e.status || 500, { error: e.message }); }
 });
 
+ensureUiToken();
 server.listen(PORT, HOST, () => log(`claude-usage listening on http://${HOST}:${PORT}`));
 const minutes = Number(cfg0.pollMinutes || 5);
 pollAll().catch(e => log('poll error', e.message));

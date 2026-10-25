@@ -4,7 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
 
 const HOME = os.homedir();
 const DATA = process.env.CLAUDE_USAGE_DATA || path.join(HOME, '.local/share/claude-usage');
@@ -286,9 +286,37 @@ async function pollAccount(acct) {
   }
 }
 
+// Isolation flags for a `claude -p` run on someone else's prompt (the gateway's callers, the MCP server's
+// rotator_ask), so the prompt can never reach this user's MCP servers, hooks, plugins, CLAUDE.md or
+// permission rules (the account dirs share settings.json with ~/.claude by symlink):
+//   --strict-mcp-config  with no --mcp-config: no MCP servers at all
+//   --restricted         ignores user/project/local settings files, so permissions.allow and hooks there
+//                        are not read; drops code-running tools even if --tools were to name them
+//   --safe-mode          disables CLAUDE.md, skills, plugins, hooks and MCP; auth works normally
+// Each is used when this claude build lists it in --help. Returns null when --strict-mcp-config is missing,
+// and the caller refuses to run. Older builds without --restricted get --setting-sources "" instead.
+function isolationFlags(claude = process.env.CLAUDE_BIN || 'claude') {
+  // Read --help through a file: claude can exit before a pipe to node drains, cutting the text at 8 KB.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccr-help-'));
+  const file = path.join(dir, 'help.txt');
+  let help = '';
+  try {
+    const fd = fs.openSync(file, 'w');
+    try { spawnSync(claude, ['--help'], { stdio: ['ignore', fd, fd], timeout: 20000 }); } finally { fs.closeSync(fd); }
+    help = fs.readFileSync(file, 'utf8');
+  } catch (_) {} finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  const has = f => new RegExp('(^|\\s)' + f + '(\\s|,|$)', 'm').test(help);
+  if (!has('--strict-mcp-config')) return null;
+  const flags = ['--strict-mcp-config'];
+  if (has('--restricted')) flags.push('--restricted');
+  else if (has('--setting-sources')) flags.push('--setting-sources', '');
+  if (has('--safe-mode')) flags.push('--safe-mode');
+  return flags;
+}
+
 module.exports = {
   HOME, DATA, STATE_DIR, LIVE_DIR, CONFIG_PATH, API_BASE, REFRESH_MODEL,
   loadConfig, keychainService, inferenceToken, readCredentials, refreshIfStale, readIdentity, credFingerprint,
   labelFor, liveBelongsTo, fetchTokenEmail, fetchUsage, normalize, stampTokenIdentity,
-  fetchHeaderUsage, headerUsage, pollAccount,
+  fetchHeaderUsage, headerUsage, pollAccount, isolationFlags,
 };

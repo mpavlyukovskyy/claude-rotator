@@ -5,13 +5,19 @@
  *
  *   POST /v1/messages  Non-streaming Messages request. Served by `claude -p` on the account with the
  *                      most headroom. The request is flattened to text: tool_use is not supported on
- *                      this path (422). With CLAUDE_USAGE_DIRECT_HAIKU=1, Haiku requests are instead
+ *                      this path (422, unless every account is exhausted and a fallback provider serves
+ *                      it). With CLAUDE_USAGE_DIRECT_HAIKU=1, Haiku requests are instead
  *                      forwarded verbatim to the Messages API with the account's OAuth token. That
  *                      direct route is OFF by default; see the README risk notes before turning it on.
  *   GET  /v1/lease     Returns the account the picker would use right now plus that account's token,
  *                      so a caller can run `claude` itself. The token goes to the caller in the body;
  *                      the log line names caller and account, never the token.
  *   GET  /healthz      Liveness and the current bench list. No auth.
+ *
+ * Fallback (providers.js): when every account is benched or capped (the 503 below), POST /v1/messages is
+ * served by the paid providers in accounts.json "fallback" instead, unless it is off there or the request
+ * sends x-rotator-no-fallback: 1. A model named "fireworks:<slug>", "openrouter:<slug>" or
+ * "anthropic-api:<slug>" skips the accounts and goes straight to that provider.
  *
  * Auth: every route except /healthz needs the x-gateway-key header. The gateway refuses to start
  * without a key of 32+ bytes. It binds 127.0.0.1 unless CLAUDE_USAGE_GATEWAY_HOST says otherwise.
@@ -22,8 +28,9 @@ const fs = require('fs');
 const http = require('http');
 const path = require('path');
 const crypto = require('crypto');
-const { spawn, spawnSync } = require('child_process');
+const { spawn } = require('child_process');
 const L = require('./lib');
+const P = require('./providers');
 
 const ENV_FILE = process.env.CLAUDE_USAGE_GATEWAY_ENV || path.join(L.DATA, 'secrets', 'gateway.env');
 function loadEnvFile(p) {
@@ -75,6 +82,10 @@ const UPGRADE_SONNET_TO_OPUS = process.env.CLAUDE_USAGE_UPGRADE_SONNET_TO_OPUS =
 const OPUS_MODEL = process.env.CLAUDE_USAGE_OPUS_MODEL || 'claude-opus-5-5';
 function servedModel(model, noUpgrade) { return !noUpgrade && UPGRADE_SONNET_TO_OPUS && /^claude-sonnet/i.test(String(model || '')) ? OPUS_MODEL : model; }
 const LIMIT_RE = /rate.?limit|usage limit|limit reached|hit your limit|quota|\b429\b|out of extra usage|locked/i;
+// A dead or missing login on one account: bench that account and try the next one (then the providers),
+// the same as a usage limit, instead of failing the whole request.
+const LOGIN_RE = /not logged in|please run \/login|invalid api key|oauth token has expired|token (has been )?revoked|invalid_grant|authentication_error|\b401\b/i;
+const LOGIN_BENCH_MS = 5 * 60 * 1000;
 const ANTHROPIC = process.env.CLAUDE_USAGE_ANTHROPIC_URL || L.API_BASE + '/v1/messages';
 const BETA = process.env.CLAUDE_USAGE_OAUTH_BETA || 'oauth-2025-04-20';
 const CALL_TIMEOUT_MS = Number(process.env.CLAUDE_USAGE_GATEWAY_TIMEOUT_MS || 180000);
@@ -230,34 +241,9 @@ const GATEWAY_TOOL_ALLOWLIST = new Set(['WebSearch', 'WebFetch']);
 function parseGatewayTools(hdr) {
   return String(hdr || '').split(',').map(s => s.trim()).filter(s => GATEWAY_TOOL_ALLOWLIST.has(s));
 }
-// Isolation flags for every `claude -p` the gateway runs, so a caller's prompt can never reach this
-// user's MCP servers, hooks, plugins, CLAUDE.md or permission rules (the account dirs share settings.json
-// with ~/.claude by symlink):
-//   --strict-mcp-config  with no --mcp-config: no MCP servers at all
-//   --restricted         ignores user/project/local settings files, so permissions.allow and hooks there
-//                        are not read; drops code-running tools even if --tools were to name them
-//   --safe-mode          disables CLAUDE.md, skills, plugins, hooks and MCP; auth works normally
-// Each is used when this claude build lists it in --help. --strict-mcp-config is required: without it the
-// gateway refuses to start. Older builds without --restricted get --setting-sources "" instead.
-function isolationFlags() {
-  // Read --help through a file: claude can exit before a pipe to node drains, cutting the text at 8 KB.
-  const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'ccr-help-'));
-  const file = path.join(dir, 'help.txt');
-  let help = '';
-  try {
-    const fd = fs.openSync(file, 'w');
-    try { spawnSync(CLAUDE, ['--help'], { stdio: ['ignore', fd, fd], timeout: 20000 }); } finally { fs.closeSync(fd); }
-    help = fs.readFileSync(file, 'utf8');
-  } catch (_) {} finally { fs.rmSync(dir, { recursive: true, force: true }); }
-  const has = f => new RegExp('(^|\\s)' + f + '(\\s|,|$)', 'm').test(help);
-  if (!has('--strict-mcp-config')) return null;
-  const flags = ['--strict-mcp-config'];
-  if (has('--restricted')) flags.push('--restricted');
-  else if (has('--setting-sources')) flags.push('--setting-sources', '');
-  if (has('--safe-mode')) flags.push('--safe-mode');
-  return flags;
-}
-const ISOLATION = isolationFlags();
+// Isolation flags for every `claude -p` the gateway runs: see L.isolationFlags. --strict-mcp-config is
+// required, so without it the gateway refuses to start.
+const ISOLATION = L.isolationFlags(CLAUDE);
 if (!ISOLATION) {
   log(`refusing to start: ${CLAUDE} --help does not list --strict-mcp-config, so gateway callers could reach your MCP servers. Update Claude Code.`);
   process.exit(78);
@@ -284,6 +270,7 @@ async function cliOnce(acct, model, system, prompt, tools) {
     let parsed; try { parsed = JSON.parse(stdout); } catch { parsed = { result: stdout.trim(), is_error: false }; }
     const text = String(parsed.result ?? parsed.text ?? '');
     if (parsed.is_error && LIMIT_RE.test(text)) { benched.set(acct.id, Date.now() + CLI_BENCH_MS); return { retry: '429-cli on ' + acct.id }; }
+    if (parsed.is_error && LOGIN_RE.test(text)) { benched.set(acct.id, Date.now() + LOGIN_BENCH_MS); log(`login error on ${acct.id}: ${text.slice(0, 120)}`); return { retry: 'login error on ' + acct.id }; }
     if (parsed.is_error) throw Object.assign(new Error('claude -p error on ' + acct.id + ': ' + text.slice(0, 300)), { final: true });
     const u = parsed.usage || {};
     return {
@@ -308,6 +295,7 @@ async function cliOnce(acct, model, system, prompt, tools) {
     try { const p = JSON.parse(String(e.stdout || '')); fromStdout = String(p.result || ''); } catch (_) {}
     const detail = fromStdout || (e.stderr && String(e.stderr)) || e.message || '';
     if (LIMIT_RE.test(detail)) { benched.set(acct.id, Date.now() + CLI_BENCH_MS); return { retry: '429-cli on ' + acct.id }; }
+    if (LOGIN_RE.test(detail)) { benched.set(acct.id, Date.now() + LOGIN_BENCH_MS); log(`login error on ${acct.id}: ${detail.slice(0, 120)}`); return { retry: 'login error on ' + acct.id }; }
     if (e.killed || /ETIMEDOUT|timed out/i.test(detail)) throw new Error(`claude -p timed out after ${CLI_TIMEOUT_MS}ms on ${acct.id}`);
     throw new Error(`claude -p failed on ${acct.id}: ${detail.slice(0, 300)}`);
   }
@@ -351,6 +339,27 @@ async function lease(u) {
     };
   }
   const e = new Error('no account with headroom'); e.code = 503; throw e;
+}
+
+// --- fallback providers ---------------------------------------------------------------------
+// Logs provider + model per call, never a key (providers.js scrubs keys out of upstream error text).
+// toolUse: a tool_use request the cli path cannot serve. If no provider serves it either, it gets the cli
+// path's 422 (with the providers' reasons) instead of a 503, except when a provider rejected its key.
+async function viaProvider(res, body, why, t0, prior, toolUse) {
+  try {
+    const out = await P.complete(body, { log });
+    res.setHeader('x-gateway-account', '');
+    res.setHeader('x-gateway-path', why);
+    res.setHeader('x-gateway-provider', out.provider);
+    log(`ok model=${body.model} provider=${out.provider} served=${out.model} path=${why} status=200 ms=${Date.now() - t0}`);
+    send(res, 200, out);
+  } catch (e) {
+    const code = e.code === 'auth' ? 502 : toolUse ? 422 : [400, 422, 503].includes(e.code) ? e.code : 502;
+    const type = e.code === 'auth' ? 'authentication_error' : code === 503 ? 'overloaded_error' : code === 502 ? 'api_error' : 'invalid_request_error';
+    const message = (toolUse && e.code !== 'auth' ? `tool_use is not served by this gateway for ${body.model} (${prior}); ` : prior ? `${prior}; ` : '') + e.message;
+    log(`FAIL model=${body.model} path=${why} code=${code}: ${message}`);
+    send(res, code, { error: { type, message } });
+  }
 }
 
 function send(res, code, obj, raw) {
@@ -397,12 +406,19 @@ const server = http.createServer((req, res) => {
   req.on('end', async () => {
     let body; try { body = JSON.parse(raw); } catch { return send(res, 400, { error: { type: 'invalid_request_error', message: 'bad json' } }); }
     if (body.stream) return send(res, 400, { error: { type: 'invalid_request_error', message: 'streaming not supported by gateway' } });
+    if (P.prefixOf(body.model)) return viaProvider(res, body, 'provider', Date.now());
     try {
       const viaCli = !(DIRECT_HAIKU && DIRECT_OK_RE.test(String(body.model || '')));
       // `claude -p` cannot return a tool_use block, so a tool-using request on the cli path would burn
       // a long run for prose the caller then rejects. Fail fast with 422 (NOT 503, which a caller's
-      // circuit breaker would read as "gateway down") so the caller can escalate to the API.
+      // circuit breaker would read as "gateway down") so the caller can escalate to the API. When every
+      // account is out of headroom and fallback is on, the providers get it first: only the Anthropic API
+      // key can serve tools, and if nothing serves it the answer is still the 422.
       if (viaCli && ((Array.isArray(body.tools) && body.tools.length) || body.tool_choice)) {
+        if (req.headers['x-rotator-no-fallback'] !== '1' && P.config().enabled && !(await pickOrder(body.model)).length) {
+          log(`tool_use with every account exhausted for model=${body.model}; trying fallback providers`);
+          return viaProvider(res, body, 'fallback', Date.now(), 'every account exhausted', true);
+        }
         log(`REJECT model=${body.model} tool_use on the cli path -> 422`);
         return send(res, 422, { error: { type: 'invalid_request_error', message: `tool_use is not served by this gateway for ${body.model}; use the API` } });
       }
@@ -416,6 +432,11 @@ const server = http.createServer((req, res) => {
       log(`ok model=${body.model}${viaCli && servedModel(body.model, noUpgrade) !== body.model ? ' served=' + servedModel(body.model, noUpgrade) : ''} acct=${out.account} path=${viaCli ? 'cli' : 'direct'} status=${out.status} bytes=${out.text.length} ms=${Date.now() - t0}`);
       send(res, out.status, null, out.text);
     } catch (e) {
+      // Every account benched or capped: hand the request to the paid providers, unless turned off.
+      if (e.code === 503 && req.headers['x-rotator-no-fallback'] !== '1' && P.config().enabled) {
+        log(`accounts exhausted for model=${body.model} (${e.message}); trying fallback providers`);
+        return viaProvider(res, body, 'fallback', Date.now(), e.message);
+      }
       const code = e.code === 503 ? 503 : 502;
       log(`FAIL model=${body && body.model} code=${code}: ${e.message}`);
       send(res, code, { error: { type: code === 503 ? 'overloaded_error' : 'api_error', message: e.message } });

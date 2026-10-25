@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="rotator-ui-token" content="">
 <title>Claude Rotator</title>
 <style>
   :root { color-scheme: light dark;
@@ -63,7 +64,7 @@
   .spark path { fill:none; stroke:var(--accent); stroke-width:2; stroke-linejoin:round; stroke-linecap:round }
   .spark .base { stroke:var(--line); stroke-width:1 }
   .foot { color:var(--muted); font-size:11px; margin-top:6px }
-  .err { color:var(--crit); font-size:12px; margin-top:10px }
+  .err { color:var(--crit); font-size:12px; margin-top:10px } .err a { color:inherit; font-weight:600 }
   .err code { font:12px ui-monospace,Menlo,monospace }
   button { font:inherit; font-size:12px; padding:5px 10px; border-radius:7px; border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer }
   button:hover { border-color:var(--accent) }
@@ -76,11 +77,111 @@
   #dlg button.ok { background:var(--accent); color:#fff; border-color:var(--accent); font-weight:600 }
   #toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:var(--crit); color:#fff; padding:10px 16px; border-radius:8px; font-size:13px; z-index:60; max-width:80% }
   details { margin-top:24px } summary { cursor:pointer; color:var(--ink2); font-size:13px }
+  /* ---- tabs + setup view ---- */
+  .htitle { display:flex; align-items:center; gap:18px; flex-wrap:wrap }
+  .tabs { display:inline-flex; background:var(--card); border:1px solid var(--line); border-radius:9px; padding:3px; gap:2px }
+  .tabs a { padding:4px 14px; border-radius:6px; color:var(--ink2); text-decoration:none; font-size:13px; font-weight:500 }
+  .tabs a:hover { color:var(--ink) }
+  .tabs a.on { background:var(--ink); color:var(--bg) }
+  .mono, code, .cmd code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace }
+  #view-setup { max-width:900px }
+  .su-head { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px 22px; margin-bottom:26px }
+  .su-head h2 { margin:0; font-size:22px; font-weight:600; letter-spacing:-.01em }
+  .su-head .lede { color:var(--ink2); margin:4px 0 14px; max-width:620px }
+  .progress { display:flex; gap:4px; margin:0 0 6px }
+  .progress i { flex:1; height:5px; border-radius:3px; background:var(--line) }
+  .progress i.done { background:var(--good) } .progress i.warn { background:var(--warn) }
+  .progress-label { font-size:12px; color:var(--muted); margin-bottom:12px }
+  .checklist { list-style:none; margin:0; padding:0; border-top:1px solid var(--line) }
+  .checklist li { display:grid; grid-template-columns:22px 1fr auto; gap:10px; align-items:center; padding:9px 0; border-bottom:1px solid var(--line) }
+  .checklist li:last-child { border-bottom:0 }
+  .checklist .t { font-weight:500 } .checklist .d { color:var(--muted); font-size:12px }
+  .checklist .opt { font-size:11px; color:var(--muted); font-weight:400; margin-left:6px }
+  .checklist a { font-size:12px; color:var(--accent); text-decoration:none; white-space:nowrap }
+  .dot { width:20px; height:20px; border-radius:50%; display:grid; place-items:center; font-size:11px; font-weight:700; border:1.5px solid var(--line); color:var(--muted) }
+  .dot.done { background:var(--good); border-color:var(--good); color:#fff }
+  .dot.warn { background:var(--warn-track); border-color:var(--warn); color:var(--ink) }
+  .steps { position:relative }
+  .step { display:grid; grid-template-columns:40px 1fr; gap:16px; margin-bottom:26px; position:relative }
+  .step:not(:last-child)::before { content:''; position:absolute; left:19px; top:44px; bottom:-26px; width:2px; background:var(--line) }
+  .num { width:40px; height:40px; border-radius:50%; background:var(--card); border:1.5px solid var(--line); display:grid; place-items:center; font-weight:600; font-size:16px; font-variant-numeric:tabular-nums; color:var(--ink2); position:relative; z-index:1 }
+  .num.done { border-color:var(--good); color:var(--good) }
+  .panel { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px 20px; min-width:0 }
+  .panel h3 { margin:0; font-size:16px; font-weight:600; display:flex; gap:8px; align-items:center; flex-wrap:wrap }
+  .panel .lede { color:var(--ink2); margin:4px 0 14px; font-size:13px }
+  .panel h4 { margin:18px 0 8px; font-size:12px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.06em }
+  .badge.ok { color:var(--good); border-color:var(--good) }
+  .badge.bad { color:var(--crit); border-color:var(--crit) }
+  .badge.wait { color:var(--serious); border-color:var(--serious) }
+  .rows > * + * { border-top:1px solid var(--line) }
+  .acct { display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; padding:11px 0 }
+  .acct .nm { font-weight:600; display:flex; gap:8px; align-items:center; flex-wrap:wrap }
+  .acct .who { color:var(--muted); font-size:12px; word-break:break-all }
+  .acct .act { display:flex; gap:8px; align-items:center; flex-wrap:wrap; min-width:0; max-width:100% }
+  .cmd { display:flex; align-items:stretch; border:1px solid var(--line); border-radius:8px; background:var(--bg); min-width:0; max-width:100%; overflow:hidden }
+  .cmd code { flex:1; padding:6px 10px; font-size:12.5px; white-space:nowrap; overflow-x:auto; min-width:0 }
+  .cmd code .pr { color:var(--muted); user-select:none; margin-right:6px }
+  .cmd button { border:0; border-left:1px solid var(--line); border-radius:0; background:var(--card); flex:none }
+  .cmd.wide { margin:6px 0 }
+  button.pri { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600 }
+  button.pri:hover { filter:brightness(1.08) }
+  button.danger:hover { border-color:var(--crit); color:var(--crit) }
+  button:disabled { opacity:.5; cursor:default }
+  button.copied { color:var(--good) }
+  input.fld { font:inherit; font-size:13px; padding:6px 10px; border:1px solid var(--line); border-radius:7px; background:var(--bg); color:var(--ink); min-width:0 }
+  input.fld:focus, button:focus-visible, .tabs a:focus-visible { outline:2px solid var(--accent); outline-offset:1px }
+  input.fld.invalid { border-color:var(--crit) }
+  .addrow { display:flex; gap:8px; margin-top:4px; flex-wrap:wrap } .addrow input { flex:1 1 180px; max-width:260px }
+  .hint { font-size:12px; color:var(--muted); margin-top:6px } .hint.bad { color:var(--crit) }
+  .callout { margin-top:12px; padding:12px 14px; border-radius:10px; background:var(--accent-track); border:1px solid var(--accent); font-size:13px }
+  .callout .act { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px }
+  .note { font-size:12px; color:var(--muted); margin-top:10px }
+  .switch { display:flex; align-items:center; gap:12px; cursor:pointer; padding:4px 0 }
+  .switch input { position:absolute; opacity:0; width:1px; height:1px }
+  .switch .hint { display:block; margin:1px 0 0; line-height:1.4 }
+  .hero a, .note a { color:var(--accent) }
+  .switch .knob { flex:none; width:40px; height:23px; border-radius:12px; background:var(--line); position:relative; transition:background .2s }
+  .switch .knob::after { content:''; position:absolute; top:3px; left:3px; width:17px; height:17px; border-radius:50%; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.25); transition:transform .2s }
+  .switch input:checked + .knob { background:var(--good) }
+  .switch input:checked + .knob::after { transform:translateX(17px) }
+  .switch input:focus-visible + .knob { outline:2px solid var(--accent); outline-offset:2px }
+  .switch input:disabled + .knob { opacity:.5 }
+  .order { list-style:none; margin:0; padding:0; counter-reset:o }
+  .order li { display:flex; align-items:center; gap:10px; padding:6px 0; counter-increment:o }
+  .order li::before { content:counter(o); width:20px; text-align:right; color:var(--muted); font-variant-numeric:tabular-nums; font-size:12px }
+  .order li .lbl { flex:1 } .order li .lbl small { color:var(--muted) }
+  .order li button { padding:1px 0; min-width:32px; font-size:15px; line-height:1.3 }
+  .prov { padding:14px 0 }
+  .prov .top { display:flex; gap:8px; align-items:center; flex-wrap:wrap }
+  .prov .top b { font-size:14px }
+  .prov .top a { margin-left:auto; font-size:12px; color:var(--accent); text-decoration:none }
+  .prov .model { font-size:12px; color:var(--muted); margin:3px 0 8px; word-break:break-all }
+  .prov .keyrow { display:flex; gap:8px; flex-wrap:wrap }
+  .prov .keyrow input { flex:1 1 220px }
+  .prov .res { font-size:12px; margin-top:7px; min-height:1em; word-break:break-word }
+  .res.good { color:var(--good) } .res.bad { color:var(--crit) } .res.info { color:var(--ink2) }
+  .banner { background:var(--warn-track); border:1px solid var(--warn); border-radius:10px; padding:10px 14px; margin-bottom:18px; font-size:13px }
+  .kv { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:6px 0 }
+  .kv > span:first-child { color:var(--muted); font-size:12px; width:70px }
+  #view-setup.reveal .su-head, #view-setup.reveal .step { animation:rise .45s cubic-bezier(.2,.7,.2,1) both }
+  #view-setup.reveal .step:nth-child(1) { animation-delay:.06s } #view-setup.reveal .step:nth-child(2) { animation-delay:.12s } #view-setup.reveal .step:nth-child(3) { animation-delay:.18s }
+  @keyframes rise { from { opacity:0; transform:translateY(6px) } to { opacity:1; transform:none } }
+  @media (prefers-reduced-motion: reduce) { #view-setup.reveal * { animation:none !important } .switch .knob, .switch .knob::after { transition:none } }
+  @media (max-width:640px) {
+    body { padding:18px 16px 40px }
+    .step { grid-template-columns:28px 1fr; gap:8px } .step:not(:last-child)::before { left:13px; top:32px }
+    .num { width:28px; height:28px; font-size:13px }
+    .panel { padding:16px 14px } .su-head { padding:16px 14px }
+    .acct .act, .acct .act .cmd { width:100% } .addrow input { max-width:none }
+    .kv > span:first-child { width:auto }
+  }
 </style>
 </head>
 <body>
 <header>
-  <h1>Claude Usage</h1><div class="meta" style="margin-top:2px">Drain order · Fable left first, then earliest full reset</div>
+  <div class="htitle"><h1>Claude Rotator</h1>
+    <nav class="tabs" aria-label="View"><a href="#" data-view="usage" id="tab-usage">Usage</a><a href="#setup" data-view="setup" id="tab-setup">Setup</a></nav></div>
+  <div class="meta" id="sub-usage" style="margin-top:2px">Drain order · Fable left first, then earliest full reset</div>
   <div style="display:flex;gap:12px;align-items:center">
     <span class="meta" id="meta">loading…</span>
     <button id="pollnow" title="Poll all accounts now">Refresh now</button>
@@ -104,10 +205,61 @@ let toastT = null;
 function uiToast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, 8000); }
 window.alert = m => uiToast(String(m));
 </script>
+<div id="view-usage">
 <section class="hero" id="hero"></section>
 <section class="grid" id="grid"></section>
 <details><summary>History table (last 7 days, 5-hour and 7-day utilisation per poll)</summary>
 <div style="overflow-x:auto"><table class="hist" id="hist"><thead><tr><th>Time</th><th>Account</th><th>5-hour</th><th>7-day</th></tr></thead><tbody></tbody></table></div></details>
+</div>
+
+<div id="view-setup" hidden>
+  <div class="banner" id="su-readonly" hidden>This page was not loaded from <code>127.0.0.1</code> on this machine, so it can show your setup but not change it. Open it with <code>ccr ui</code>.</div>
+  <section class="su-head">
+    <h2>Setup</h2>
+    <p class="lede">Log in each subscription, add fallback keys if you want them, and connect Claude Code. Each change saves right away.</p>
+    <div class="progress" id="su-progress"></div>
+    <div class="progress-label" id="su-progress-label">checking…</div>
+    <ul class="checklist" id="su-check"></ul>
+  </section>
+
+  <div class="steps">
+    <section class="step" id="step-accounts">
+      <div class="num" id="num-accounts">1</div>
+      <div class="panel">
+        <h3>Subscriptions</h3>
+        <p class="lede">One slot per Claude subscription. Each slot logs in through Claude Code's own browser sign-in, so no password or token is ever typed into this page.</p>
+        <div class="rows" id="acct-list"></div>
+        <h4>Add a subscription</h4>
+        <form class="addrow" id="add-form" autocomplete="off">
+          <input class="fld" id="add-name" name="name" placeholder="name, e.g. work" maxlength="32" spellcheck="false" autocapitalize="off" aria-label="New account name" data-needs-token>
+          <button class="pri" type="submit" id="add-btn" data-needs-token>Add account</button>
+        </form>
+        <div class="hint" id="add-hint">Lowercase letters, digits, - and _, starting with a letter. Not a ccr command such as ls, run or ui.</div>
+        <div id="add-result"></div>
+      </div>
+    </section>
+
+    <section class="step" id="step-providers">
+      <div class="num" id="num-providers">2</div>
+      <div class="panel">
+        <h3>Fallback providers <span class="badge">optional</span></h3>
+        <p class="lede">When every subscription is maxed out, the gateway can send the request to one of these instead. A provider without a key is skipped. Keys stay on this machine in a file only you can read.</p>
+        <div id="prov-body"><div class="note">loading…</div></div>
+      </div>
+    </section>
+
+    <section class="step" id="step-connect">
+      <div class="num" id="num-connect">3</div>
+      <div class="panel">
+        <h3>Gateway and MCP</h3>
+        <p class="lede">The gateway serves Messages API requests from your subscriptions on <code>127.0.0.1</code>. The MCP server lets Claude Code itself check usage and hand a prompt to the best account.</p>
+        <div id="gw-body"></div>
+        <h4>MCP server for Claude Code</h4>
+        <div id="mcp-body"></div>
+      </div>
+    </section>
+  </div>
+</div>
 <script>
 const $ = s => document.querySelector(s);
 // Every value from /api/state or /api/history is data (emails, labels, error text from the network): escape it before it meets innerHTML.
@@ -169,7 +321,7 @@ async function load() {
        <div class="sub">${Math.round(100 - (rec.eff7 ?? 0))}% weekly · ${Math.round(100 - rec.eff5)}% 5-hour left</div></div>
        <div><div class="sub">Fable across accounts</div><div class="fablesum" style="max-width:320px">${fableSum}</div></div>
        <div class="sub" style="margin-left:auto">launch: <code>ccr ${esc(rec.id)}</code> &nbsp;or&nbsp; <code>ccr</code></div>`
-    : `<div><div class="sub">Use next</div><div class="big" style="font-size:28px">No account with data</div></div><div class="sub">Log in to at least one account and press Refresh now.</div>`;
+    : `<div><div class="sub">Use next</div><div class="big" style="font-size:28px">No account with data</div></div><div class="sub">Log in to at least one account in <a href="#setup">Setup</a>, then press Refresh now.</div>`;
 
   const cut = Date.now() - 24 * 3600 * 1000;
   const GROUP = { 0: ['good', 'Fable left: drain these first'], 1: ['', 'Usable, but Fable is gone'], 2: ['', 'Maxed out: wait for the reset'], 3: ['', 'Login broken: not used until fixed'] };
@@ -190,7 +342,7 @@ async function load() {
       a.remote ? `<span class="badge" style="border-color:var(--accent);color:var(--accent)">${esc(a.remote)}</span>` : '',
     ].join('');
     const models = a.models && Object.keys(a.models).length ? Object.entries(a.models).map(([k, v]) => meter(`7-day ${v.name}`, a.effModels?.[k], v.resetsAt, k === 'fable' && a.drainTier === 0)).join('') : '';
-    const err = a.error ? `<div class="err">${a.sharedChain ? esc(a.error) : a.chainLost ? 'Login REVOKED: another copy of this login refreshed first, so this copy can never refresh again. Showing last known numbers.' : a.needsLogin ? `Run <code>ccr ${esc(a.id)}</code> and <code>/login</code> once.` : (a.tokenExpired ? 'Token expired. Open this account once (<code>ccr ' + esc(a.id) + '</code>) to refresh it. Showing last known numbers.' : 'Last poll failed: <code>' + esc(a.error) + '</code>')}</div>` : '';
+    const err = a.error ? `<div class="err">${a.sharedChain ? esc(a.error) : a.chainLost ? 'Login REVOKED: another copy of this login refreshed first, so this copy can never refresh again. Showing last known numbers.' : a.needsLogin ? `Run <code>ccr login ${esc(a.id)}</code> once, or use <a href="#setup">Setup</a>.` : (a.tokenExpired ? 'Token expired. Open this account once (<code>ccr ' + esc(a.id) + '</code>) to refresh it. Showing last known numbers.' : 'Last poll failed: <code>' + esc(a.error) + '</code>')}</div>` : '';
     return `${head}<div class="card ${a.id === s.recommended ? 'rec' : ''} ${a.drainTier === 0 ? 'fable' : ''} ${a.drainTier >= 2 ? 'maxed' : ''}">
       <h2>${esc(a.label)} ${badges}</h2>
       <div class="who">${esc(a.email || a.configDir)}${a.plan ? ` · ${esc(String(a.tier || a.plan).replace('default_claude_', '').replace(/_/g, ' '))}` : ''}</div>
@@ -212,6 +364,241 @@ async function load() {
 $('#pollnow').onclick = async () => { $('#pollnow').disabled = true; $('#pollnow').textContent = 'polling…'; try { await fetch('/api/poll', { method: 'POST' }); await load(); } finally { $('#pollnow').disabled = false; $('#pollnow').textContent = 'Refresh now'; } };
 load().catch(e => $('#meta').textContent = 'error: ' + e.message);
 setInterval(() => load().catch(() => {}), 60000);
+</script>
+<script>
+// ---- Setup view ------------------------------------------------------------------------------------------
+// The server puts the setup token in the meta tag only for a page loaded from 127.0.0.1 on this machine.
+// Every change goes back with it in x-rotator-ui-token. Same esc() rule as above for every interpolated value.
+const UI_TOKEN = document.querySelector('meta[name="rotator-ui-token"]')?.content || '';
+const KEY_PAGES = { fireworks: 'https://app.fireworks.ai/account/api-keys', openrouter: 'https://openrouter.ai/settings/keys', anthropic: 'https://platform.claude.com/settings/keys' };
+const NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
+const RESERVED = new Set(['ls', 'list', 'web', 'open', 'pick', 'add', 'run', 'help', 'ui', 'login', 'mcp']);
+let setupData = null, provData = null, provError = '';
+const testResults = {}; // provider name -> { cls, text }, kept across re-renders
+
+async function api(method, url, body) {
+  const r = await fetch(url, { method, headers: { 'content-type': 'application/json', 'x-rotator-ui-token': UI_TOKEN }, body: body === undefined ? undefined : JSON.stringify(body) });
+  let j = {}; try { j = await r.json(); } catch (_) {}
+  if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+  return j;
+}
+function fallbackCopy(t) {
+  const ta = document.createElement('textarea'); ta.value = t; ta.setAttribute('readonly', ''); ta.style.cssText = 'position:fixed;opacity:0;top:0';
+  document.body.appendChild(ta); ta.select(); let ok = false; try { ok = document.execCommand('copy'); } catch (_) {} ta.remove(); return ok;
+}
+async function copyText(t) { try { await navigator.clipboard.writeText(t); return true; } catch (_) { return fallbackCopy(t); } }
+function flash(btn, text, cls = 'copied') {
+  const was = btn.dataset.label || btn.textContent; btn.dataset.label = was; btn.textContent = text; btn.classList.add(cls);
+  clearTimeout(btn._t); btn._t = setTimeout(() => { btn.textContent = was; btn.classList.remove(cls); }, 1600);
+}
+// A copyable command (prompt shown) or value (prompt: false).
+const cmd = (text, { cls = '', prompt = true } = {}) => `<div class="cmd ${cls}"><code>${prompt ? '<span class="pr">$</span>' : ''}${esc(text)}</code><button type="button" data-copy="${esc(text)}">Copy</button></div>`;
+const loginButtons = id => cmd(`ccr login ${id}`) + (setupData?.canOpenTerminal ? `<button type="button" data-open-login="${esc(id)}" data-needs-token>Open login in Terminal</button>` : '');
+
+function showView() {
+  const setup = location.hash === '#setup';
+  $('#view-usage').hidden = setup; $('#view-setup').hidden = !setup;
+  $('#sub-usage').hidden = setup; $('#pollnow').hidden = setup;
+  $('#tab-usage').classList.toggle('on', !setup); $('#tab-setup').classList.toggle('on', setup);
+  $('#tab-usage').setAttribute('aria-current', setup ? 'false' : 'page'); $('#tab-setup').setAttribute('aria-current', setup ? 'page' : 'false');
+  if (setup) { const v = $('#view-setup'); v.classList.remove('reveal'); void v.offsetWidth; v.classList.add('reveal'); loadSetup(); }
+}
+
+function checklist(s) {
+  const n = s.accounts.length, ok = s.loggedIn, p = s.providers, g = s.gateway;
+  const poll = s.dashboard.pollAgeSec;
+  return [
+    { st: s.claude.found ? 'done' : 'todo', t: 'Claude Code found', d: s.claude.found ? `version ${s.claude.version}` : 'The claude CLI is not on the dashboard\'s PATH. Install Claude Code, then re-run ./install.sh.', go: s.claude.found ? '' : 'https://code.claude.com/docs/en/setup' },
+    { st: poll != null && poll > 1200 ? 'warn' : 'done', t: 'Dashboard running', d: poll == null ? 'first poll still running' : poll > 1200 ? `poller silent for ${Math.round(poll / 60)} min` : `${s.dashboard.url}, last poll ${ago(new Date(Date.now() - poll * 1000).toISOString())}` },
+    { st: ok === 0 ? 'todo' : ok < n ? 'warn' : 'done', t: 'Subscriptions logged in', d: `${ok} of ${n} logged in`, go: ok < n ? '#step-accounts' : '' },
+    { st: !p.available || p.configured === 0 ? 'todo' : p.fallback.enabled ? 'done' : 'warn', t: 'Fallback providers', opt: true,
+      d: !p.available ? 'not part of this install' : p.configured === 0 ? 'no keys saved' : `${p.configured} of ${p.total} keys saved, fallback ${p.fallback.enabled ? 'on' : 'off'}`, go: '#step-providers' },
+    { st: !g.installed ? 'todo' : g.running ? 'done' : 'warn', t: 'Gateway', opt: true, d: !g.installed ? 'not installed' : g.running ? `running on ${g.url}` : `installed but not answering on ${g.url}`, go: '#step-connect' },
+    { st: s.mcp.registered ? 'done' : 'todo', t: 'MCP server added to Claude Code', d: s.mcp.registered ? 'claude-rotator is registered' : 'one command, below', go: s.mcp.registered ? '' : '#step-connect' },
+  ];
+}
+
+function renderChecklist(s) {
+  const items = checklist(s), done = items.filter(i => i.st === 'done').length;
+  $('#su-progress').innerHTML = items.map(i => `<i class="${i.st}"></i>`).join('');
+  $('#su-progress-label').textContent = `${done} of ${items.length} ready`;
+  $('#su-check').innerHTML = items.map(i => `<li data-check="${esc(i.t)}" data-state="${i.st}">
+    <span class="dot ${i.st}" aria-label="${i.st === 'done' ? 'done' : i.st === 'warn' ? 'needs attention' : 'to do'}">${i.st === 'done' ? '✓' : i.st === 'warn' ? '!' : ''}</span>
+    <div><div class="t">${esc(i.t)}${i.opt ? '<span class="opt">optional</span>' : ''}</div><div class="d">${esc(i.d)}</div></div>
+    ${i.go ? `<a href="${esc(i.go)}" ${i.go.startsWith('http') ? 'target="_blank" rel="noopener"' : 'data-jump'}>${i.go.startsWith('http') ? 'Install guide' : 'Go to step'}</a>` : '<span></span>'}</li>`).join('');
+  $('#num-accounts').classList.toggle('done', s.accounts.length > 0 && s.loggedIn === s.accounts.length);
+  $('#num-providers').classList.toggle('done', s.providers.configured > 0 && s.providers.fallback.enabled);
+  $('#num-connect').classList.toggle('done', s.gateway.installed && s.gateway.running && s.mcp.registered);
+}
+
+function renderAccounts(s) {
+  const B = { ok: '<span class="badge ok">logged in</span>', login: '<span class="badge bad">not logged in</span>', pending: '<span class="badge wait">checking</span>', error: '<span class="badge bad">login problem</span>' };
+  $('#acct-list').innerHTML = s.accounts.map(a => `<div class="acct" data-account="${esc(a.id)}">
+    <div><div class="nm">${esc(a.id)} ${a.default ? '<span class="badge">default</span>' : ''} ${B[a.status] || ''}</div>
+      <div class="who">${a.email ? esc(a.email) + ' · ' : ''}${esc(a.configDir)}${a.error ? ' · ' + esc(a.error) : ''}</div></div>
+    ${a.status === 'ok' ? '' : `<div class="act">${loginButtons(a.id)}</div>`}</div>`).join('') || '<div class="note">No accounts yet.</div>';
+}
+
+function provList() { return Array.isArray(provData) ? provData : (provData?.providers || []); }
+function fallbackCfg() { return (!Array.isArray(provData) && provData?.fallback) || { enabled: !!setupData?.providers?.fallback?.enabled }; }
+function renderProviders() {
+  const body = $('#prov-body');
+  // Never wipe a key someone is typing: skip the periodic redraw while any key field holds text or focus.
+  if ([...body.querySelectorAll('input[type=password]')].some(i => i.value || i === document.activeElement)) return;
+  if (provError) { body.innerHTML = `<div class="res bad">${esc(provError)}</div>`; return; }
+  const list = provList(), fb = fallbackCfg();
+  if (!list.length) { body.innerHTML = '<div class="note">Fallback providers are not part of this install.</div>'; return; }
+  const order = (fb.order && fb.order.length ? fb.order : list.map(p => p.name)).filter(n => list.some(p => p.name === n));
+  for (const p of list) if (!order.includes(p.name)) order.push(p.name);
+  const byName = Object.fromEntries(list.map(p => [p.name, p]));
+  body.innerHTML = `
+    <label class="switch"><input type="checkbox" role="switch" id="fb-toggle" ${fb.enabled ? 'checked' : ''} data-needs-token><span class="knob"></span>
+      <span><b>Use fallback providers</b><span class="hint">${fb.enabled ? 'On: maxed-out requests go to the providers below, in order.' : 'Off: when every subscription is maxed out, requests fail.'}</span></span></label>
+    <h4>Order</h4>
+    <ol class="order" id="fb-order">
+      <li><span class="lbl">Your subscriptions <small>always first</small></span></li>
+      ${order.map((n, i) => `<li data-order="${esc(n)}"><span class="lbl">${esc(byName[n].label || n)} ${byName[n].configured ? '' : '<small>no key, skipped</small>'}</span>
+        <button type="button" data-move="${esc(n)}" data-dir="-1" aria-label="Move ${esc(byName[n].label || n)} up" ${i === 0 ? 'disabled' : ''} data-needs-token>↑</button>
+        <button type="button" data-move="${esc(n)}" data-dir="1" aria-label="Move ${esc(byName[n].label || n)} down" ${i === order.length - 1 ? 'disabled' : ''} data-needs-token>↓</button></li>`).join('')}
+    </ol>
+    <h4>Keys</h4>
+    <div class="rows">${order.map(n => { const p = byName[n], r = testResults[n]; return `<div class="prov" data-provider="${esc(n)}">
+      <div class="top"><b>${esc(p.label || n)}</b>${p.configured ? `<span class="badge ok">key saved ${esc(p.keyHint || '')}</span>` : '<span class="badge">no key</span>'}
+        ${KEY_PAGES[n] ? `<a href="${esc(KEY_PAGES[n])}" target="_blank" rel="noopener">Get a key ↗</a>` : ''}</div>
+      <div class="model">model <span class="mono">${esc(p.model || 'default')}</span></div>
+      <form class="keyrow" data-save="${esc(n)}" autocomplete="off">
+        <input class="fld mono" type="password" name="apiKey" placeholder="${p.configured ? 'Paste a new key to replace it' : 'Paste API key'}" autocomplete="new-password" spellcheck="false" aria-label="${esc(p.label || n)} API key" data-needs-token>
+        <button class="pri" type="submit" data-needs-token>Save</button>
+        <button type="button" data-test="${esc(n)}" ${p.configured ? '' : 'disabled'} data-needs-token>Test</button>
+        <button type="button" class="danger" data-remove="${esc(n)}" ${p.configured ? '' : 'disabled'} data-needs-token>Remove</button>
+      </form>
+      <div class="res ${r ? r.cls : ''}" aria-live="polite">${r ? esc(r.text) : ''}</div></div>`; }).join('')}</div>`;
+  lockIfReadOnly();
+}
+
+function renderConnect(s) {
+  const g = s.gateway;
+  $('#gw-body').innerHTML = g.installed ? `
+    <div class="kv"><span>Status</span>${g.running ? '<span class="badge ok">running</span>' : '<span class="badge bad">not answering</span>'}</div>
+    <div class="kv"><span>URL</span>${cmd(g.url, { prompt: false })}</div>
+    <div class="kv"><span>Key</span><button type="button" id="gw-key" data-needs-token>Copy gateway key</button><span class="hint" style="margin:0">Fetched only when you click, never shown on the page.</span></div>
+    <div class="note">Test it from a terminal (paste the key in place of <code>$GATEWAY_KEY</code>):</div>
+    ${cmd(`curl -s ${g.url}/v1/messages -H "x-gateway-key: $GATEWAY_KEY" -H "content-type: application/json" -d '{"model":"claude-sonnet-5-5","max_tokens":64,"messages":[{"role":"user","content":"Say hi"}]}'`, { cls: 'wide' })}`
+    : `<div class="kv"><span>Status</span><span class="badge">not installed</span></div>
+    <div class="note" style="margin-top:4px">The gateway is optional. To add it, run this in the claude-rotator folder:</div>${cmd('./install.sh --with-gateway', { cls: 'wide' })}`;
+  $('#mcp-body').innerHTML = `<div class="kv"><span>Status</span>${s.mcp.registered ? '<span class="badge ok">added</span>' : '<span class="badge">not added yet</span>'}</div>
+    <div class="note" style="margin-top:4px">Run this once in a terminal, then start a new Claude Code session. It adds the tools rotator_status, rotator_ask and rotator_providers in every project.</div>
+    ${cmd(s.mcp.command, { cls: 'wide' })}`;
+}
+
+function lockIfReadOnly() {
+  if (UI_TOKEN) return;
+  $('#su-readonly').hidden = false;
+  document.querySelectorAll('#view-setup [data-needs-token]').forEach(el => { el.disabled = true; });
+}
+
+async function loadSetup() {
+  try {
+    const [s, p] = await Promise.all([fetch('/api/setup').then(r => r.json()), fetch('/api/providers').then(async r => {
+      if (r.status === 404) return { providers: [] };
+      const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`); return j;
+    }).then(j => { provError = ''; return j; }, e => { provError = 'Could not load providers: ' + e.message; return null; })]);
+    if (s.error) throw new Error(s.error);
+    setupData = s; if (p) provData = p;
+    renderChecklist(s); renderAccounts(s); renderProviders(); renderConnect(s); lockIfReadOnly();
+  } catch (e) { $('#su-progress-label').textContent = 'Could not load setup: ' + e.message; }
+}
+
+// One click handler for every button in the view, so redraws never drop a listener.
+document.addEventListener('click', async ev => {
+  const b = ev.target.closest('button, a[data-jump]'); if (!b || !b.closest('#view-setup')) return;
+  if (b.matches('a[data-jump]')) { ev.preventDefault(); document.querySelector(b.getAttribute('href'))?.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+  try {
+    if (b.dataset.copy != null) { flash(b, (await copyText(b.dataset.copy)) ? 'Copied' : 'Copy failed'); return; }
+    if (b.id === 'gw-key') {
+      // Safari and WKWebView keep the click's permission to write the clipboard only if the write starts now,
+      // so hand the clipboard a promise for the key instead of awaiting the fetch first.
+      const keyP = api('GET', '/api/gateway/key').then(j => j.key);
+      let ok = false;
+      if (window.ClipboardItem && navigator.clipboard?.write) {
+        try { await navigator.clipboard.write([new ClipboardItem({ 'text/plain': keyP.then(k => new Blob([k], { type: 'text/plain' })) })]); ok = true; } catch (_) {}
+      }
+      if (!ok) ok = await copyText(await keyP);
+      flash(b, ok ? 'Key copied' : 'Copy failed'); return;
+    }
+    if (b.dataset.openLogin) {
+      b.disabled = true; await api('POST', `/api/accounts/${encodeURIComponent(b.dataset.openLogin)}/open-login`);
+      flash(b, 'Opened in Terminal'); b.disabled = false; return;
+    }
+    if (b.dataset.test) {
+      const n = b.dataset.test; testResults[n] = { cls: 'info', text: 'Testing: one small request…' }; b.disabled = true;
+      b.closest('.prov').querySelector('.res').className = 'res info'; b.closest('.prov').querySelector('.res').textContent = testResults[n].text;
+      const r = await api('POST', `/api/providers/${encodeURIComponent(n)}/test`).catch(e => ({ ok: false, error: e.message }));
+      testResults[n] = r.ok ? { cls: 'good', text: `Works: answered in ${r.ms} ms with ${r.model}` } : { cls: 'bad', text: `Failed: ${r.error || 'no answer'}` };
+      renderProviders(); return;
+    }
+    if (b.dataset.remove) {
+      const n = b.dataset.remove, label = provList().find(p => p.name === n)?.label || n;
+      if (!(await uiConfirm(`Remove the ${label} key from this machine? Fallback skips ${label} until you add a key again.`))) return;
+      await api('DELETE', `/api/providers/${encodeURIComponent(n)}`);
+      testResults[n] = { cls: 'info', text: 'Key removed.' }; await loadSetup(); return;
+    }
+    if (b.dataset.move) {
+      const fb = fallbackCfg(), names = [...document.querySelectorAll('#fb-order [data-order]')].map(li => li.dataset.order);
+      const i = names.indexOf(b.dataset.move), j = i + Number(b.dataset.dir);
+      if (i < 0 || j < 0 || j >= names.length) return;
+      [names[i], names[j]] = [names[j], names[i]];
+      await api('POST', '/api/fallback', { order: names }); if (!Array.isArray(provData) && provData) provData.fallback = { ...fb, order: names };
+      await loadSetup(); return;
+    }
+  } catch (e) { b.disabled = false; uiToast(e.message); }
+});
+
+document.addEventListener('change', async ev => {
+  if (ev.target.id !== 'fb-toggle') return;
+  const t = ev.target, want = t.checked; t.disabled = true;
+  try { await api('POST', '/api/fallback', { enabled: want }); await loadSetup(); }
+  catch (e) { t.checked = !want; t.disabled = false; uiToast(e.message); }
+});
+
+document.addEventListener('submit', async ev => {
+  const f = ev.target;
+  if (f.dataset.save) {
+    ev.preventDefault();
+    const n = f.dataset.save, input = f.querySelector('input'), key = input.value.trim(), btn = f.querySelector('button[type=submit]');
+    if (!key) { input.classList.add('invalid'); input.focus(); return; }
+    btn.disabled = true;
+    try { await api('POST', `/api/providers/${encodeURIComponent(n)}`, { apiKey: key }); input.value = ''; input.classList.remove('invalid'); testResults[n] = { cls: 'info', text: 'Saved. Press Test to check it with one small request.' }; }
+    catch (e) { testResults[n] = { cls: 'bad', text: `Not saved: ${e.message}` }; input.value = ''; }
+    btn.disabled = false; await loadSetup(); renderProviders(); return;
+  }
+  if (f.id === 'add-form') {
+    ev.preventDefault();
+    const input = $('#add-name'), name = input.value.trim(), hint = $('#add-hint');
+    const why = !name ? 'Type a name for the new slot.' : !NAME_RE.test(name) ? 'Use lowercase letters, digits, - and _, starting with a letter (32 at most).'
+      : RESERVED.has(name) ? `"${name}" is a ccr command. Pick another name.` : setupData?.accounts.some(a => a.id === name) ? `There is already an account named "${name}".` : '';
+    if (why) { input.classList.add('invalid'); hint.textContent = why; hint.className = 'hint bad'; input.focus(); return; }
+    $('#add-btn').disabled = true;
+    try {
+      const r = await api('POST', '/api/accounts', { name });
+      input.value = ''; input.classList.remove('invalid'); hint.className = 'hint'; hint.textContent = 'Lowercase letters, digits, - and _, starting with a letter. Not a ccr command such as ls, run or ui.';
+      $('#add-result').innerHTML = `<div class="callout" id="add-callout"><b>Slot ${esc(r.id)} is ready</b> in <code>${esc(r.dir)}</code>. Now log in to it with a different subscription. The command opens Claude's sign-in page in your browser.
+        <div class="act">${loginButtons(r.id)}</div></div>`;
+      lockIfReadOnly(); await loadSetup();
+    } catch (e) { input.classList.add('invalid'); hint.textContent = e.message; hint.className = 'hint bad'; }
+    $('#add-btn').disabled = false;
+  }
+});
+$('#add-name').addEventListener('input', e => e.target.classList.remove('invalid'));
+document.addEventListener('input', e => { if (e.target.matches('.prov input')) e.target.classList.remove('invalid'); });
+
+window.addEventListener('hashchange', () => { if (location.hash === '#setup' || location.hash === '' || location.hash === '#') showView(); });
+document.querySelectorAll('.tabs a').forEach(a => a.addEventListener('click', ev => {
+  ev.preventDefault(); history.replaceState(null, '', a.dataset.view === 'setup' ? '#setup' : location.pathname); showView();
+}));
+showView();
+// While Setup is open, pick up a login finished in Terminal or a key saved from the CLI.
+setInterval(() => { if (location.hash === '#setup' && !document.hidden) loadSetup(); }, 10000);
 </script>
 </body>
 </html>
